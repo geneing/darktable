@@ -18,6 +18,7 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+#include "bauhaus/bauhaus.h"
 #include "control/conf.h"
 #include "control/control.h"
 #include "develop/blend.h"
@@ -43,6 +44,7 @@ typedef struct dt_iop_spots_params_t
 typedef struct dt_iop_spots_gui_data_t
 {
   GtkLabel *label;
+  GtkWidget *method;
   GtkWidget *bt_path, *bt_circle, *bt_ellipse;
 } dt_iop_spots_gui_data_t;
 
@@ -650,9 +652,18 @@ void gui_init(dt_iop_module_t *self)
   self->gui_data = malloc(sizeof(dt_iop_spots_gui_data_t));
   dt_iop_spots_gui_data_t *g = (dt_iop_spots_gui_data_t *)self->gui_data;
 
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
   dt_gui_add_help_link(self->widget, dt_get_help_url(self->op));
   GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+
+  g->method = dt_bauhaus_combobox_new(self);
+  dt_bauhaus_widget_set_label(g->method, NULL, _("method"));
+  dt_bauhaus_combobox_add(g->method, _("inpaint"));
+  dt_bauhaus_combobox_add(g->method, _("heal"));
+  dt_bauhaus_combobox_set(g->method, 0);
+  gtk_box_pack_start(GTK_BOX(self->widget), g->method, TRUE, TRUE, 0);
+  gtk_widget_set_tooltip_text(g->method, _("inpaint automatically finds matching image\nheal requires manual selection"));
+
   GtkWidget *label = gtk_label_new(_("number of strokes:"));
   gtk_box_pack_start(GTK_BOX(hbox), label, FALSE, TRUE, 0);
   g->label = GTK_LABEL(gtk_label_new("-1"));
