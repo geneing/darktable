@@ -43,6 +43,9 @@
 #include "libs/colorpicker.h"
 #include "views/view.h"
 #include "views/view_api.h"
+#ifdef GDK_WINDOWING_QUARTZ
+#include "osx/osx.h"
+#endif
 
 #ifdef USE_LUA
 #include "lua/image.h"
@@ -353,9 +356,9 @@ void expose(
     g_assert(darktable.develop->proxy.snapshot.filename != NULL);
 
     /* Store current image surface to snapshot file.
-       FIXME: add checks so that we dont make snapshots of preview pipe image surface.
+       FIXME: add checks so that we don't make snapshots of preview pipe image surface.
     */
-    int fd = g_open(darktable.develop->proxy.snapshot.filename, O_CREAT | O_WRONLY, 0600);
+    int fd = g_open(darktable.develop->proxy.snapshot.filename, O_CREAT | O_WRONLY | O_BINARY, 0600);
     cairo_surface_write_to_png_stream(image_surface, write_snapshot_data, GINT_TO_POINTER(fd));
     close(fd);
   }
@@ -584,6 +587,12 @@ static void dt_dev_change_image(dt_develop_t *dev, const uint32_t imgid)
   // stop crazy users from sleeping on key-repeat spacebar:
   if(dev->image_loading) return;
 
+  // disable color picker when changing image
+  if(dev->gui_module)
+  {
+    dev->gui_module->request_color_pick = DT_REQUEST_COLORPICK_OFF;
+  }
+
   // update aspect ratio
   if(dev->preview_pipe->backbuf && dev->preview_status == DT_DEV_PIXELPIPE_VALID)
   {
@@ -594,6 +603,9 @@ static void dt_dev_change_image(dt_develop_t *dev, const uint32_t imgid)
   {
     dt_image_set_aspect_ratio(dev->image_storage.id);
   }
+
+  // clean the undo list
+  dt_undo_clear(darktable.undo, DT_UNDO_DEVELOP);
 
   // prevent accels_window to refresh
   darktable.view_manager->accels_window.prevent_refresh = TRUE;
@@ -821,6 +833,10 @@ static void dt_dev_change_image(dt_develop_t *dev, const uint32_t imgid)
   darktable.view_manager->accels_window.prevent_refresh = FALSE;
   if(darktable.view_manager->accels_window.window && darktable.view_manager->accels_window.sticky)
     dt_view_accels_refresh(darktable.view_manager);
+
+  // just make sure at this stage we have only history info into the undo, all automatic
+  // tagging should be ignored.
+  dt_undo_clear(darktable.undo, DT_UNDO_TAGS);
 }
 
 static void film_strip_activated(const int imgid, void *data)
@@ -829,17 +845,6 @@ static void film_strip_activated(const int imgid, void *data)
   const dt_view_t *self = (dt_view_t *)data;
   dt_develop_t *dev = (dt_develop_t *)self->data;
 
-  // disable color picker when changing image
-  if(dev->gui_module)
-  {
-    dev->gui_module->request_color_pick = DT_REQUEST_COLORPICK_OFF;
-  }
-
-  // first compute/update possibly new aspect ratio of current picture
-  dt_image_set_aspect_ratio(dev->image_storage.id);
-
-  // clean the undo list
-  dt_undo_clear(darktable.undo, DT_UNDO_DEVELOP);
   dt_dev_change_image(dev, imgid);
   dt_view_filmstrip_scroll_to_image(darktable.view_manager, imgid, FALSE);
   // record the imgid to display when going back to lighttable
@@ -887,10 +892,10 @@ static void dt_dev_jump_image(dt_develop_t *dev, int diff)
 
       if(!dev->image_loading)
       {
+        dt_dev_change_image(dev, imgid);
         dt_view_filmstrip_scroll_to_image(darktable.view_manager, imgid, FALSE);
         // record the imgid to display when going back to lighttable
         dt_view_lighttable_set_position(darktable.view_manager, dt_collection_image_offset(imgid));
-        dt_dev_change_image(dev, imgid);
       }
     }
     sqlite3_finalize(stmt);
@@ -916,7 +921,6 @@ static gboolean zoom_key_accel(GtkAccelGroup *accel_group, GObject *acceleratabl
       dt_control_set_dev_zoom_x(zoom_x);
       dt_control_set_dev_zoom_y(zoom_y);
       dt_control_set_dev_closeup(closeup);
-      dt_dev_invalidate(dev);
       break;
     case 2:
       zoom_x = zoom_y = 0.0f;
@@ -925,18 +929,19 @@ static gboolean zoom_key_accel(GtkAccelGroup *accel_group, GObject *acceleratabl
       dt_control_set_dev_zoom_x(zoom_x);
       dt_control_set_dev_zoom_y(zoom_y);
       dt_control_set_dev_closeup(0);
-      dt_dev_invalidate(dev);
       break;
     case 3:
       dt_control_set_dev_zoom(DT_ZOOM_FIT);
       dt_control_set_dev_zoom_x(0);
       dt_control_set_dev_zoom_y(0);
       dt_control_set_dev_closeup(0);
-      dt_dev_invalidate(dev);
       break;
     default:
       break;
   }
+  dt_dev_invalidate(dev);
+  dt_control_queue_redraw_center();
+  dt_control_navigation_redraw();
   return TRUE;
 }
 
@@ -972,14 +977,16 @@ static gboolean export_key_accel_callback(GtkAccelGroup *accel_group, GObject *a
   dt_colorspaces_color_profile_type_t icc_type = dt_conf_get_int("plugins/lighttable/export/icctype");
   gchar *icc_filename = dt_conf_get_string("plugins/lighttable/export/iccprofile");
   dt_iop_color_intent_t icc_intent = dt_conf_get_int("plugins/lighttable/export/iccintent");
+  gchar *metadata_export = dt_lib_export_metadata_get_conf();
   // darkroom is for single images, so only export the one the user is working on
   GList *l = g_list_append(NULL, GINT_TO_POINTER(dev->image_storage.id));
   dt_control_export(l, max_width, max_height, format_index, storage_index, high_quality, upscale, style, style_append,
-                    icc_type, icc_filename, icc_intent);
+                    icc_type, icc_filename, icc_intent, metadata_export);
   g_free(format_name);
   g_free(storage_name);
   g_free(style);
   g_free(icc_filename);
+  g_free(metadata_export);
   return TRUE;
 }
 
@@ -1797,6 +1804,7 @@ void gui_init(dt_view_t *self)
   dt_view_manager_view_toolbox_add(darktable.view_manager, dev->second_window.button, DT_VIEW_DARKROOM);
 
   const int panel_width = dt_conf_get_int("panel_width");
+  const int dialog_width = panel_width > 350 ? panel_width : 350;
 
   /* create rawoverexposed popup tool */
   {
@@ -1816,7 +1824,7 @@ void gui_init(dt_view_t *self)
 
     // and the popup window
     dev->rawoverexposed.floating_window = gtk_popover_new(dev->rawoverexposed.button);
-    gtk_widget_set_size_request(GTK_WIDGET(dev->rawoverexposed.floating_window), panel_width, -1);
+    gtk_widget_set_size_request(GTK_WIDGET(dev->rawoverexposed.floating_window), dialog_width, -1);
 #if GTK_CHECK_VERSION(3, 16, 0)
     g_object_set(G_OBJECT(dev->rawoverexposed.floating_window), "transitions-enabled", FALSE, NULL);
 #endif
@@ -1880,7 +1888,7 @@ void gui_init(dt_view_t *self)
 
     // and the popup window
     dev->overexposed.floating_window = gtk_popover_new(dev->overexposed.button);
-    gtk_widget_set_size_request(GTK_WIDGET(dev->overexposed.floating_window), panel_width, -1);
+    gtk_widget_set_size_request(GTK_WIDGET(dev->overexposed.floating_window), dialog_width, -1);
 #if GTK_CHECK_VERSION(3, 16, 0)
     g_object_set(G_OBJECT(dev->overexposed.floating_window), "transitions-enabled", FALSE, NULL);
 #endif
@@ -1952,7 +1960,7 @@ void gui_init(dt_view_t *self)
 
     // and the popup window, which is shared between the two profile buttons
     dev->profile.floating_window = gtk_popover_new(NULL);
-    gtk_widget_set_size_request(GTK_WIDGET(dev->profile.floating_window), panel_width, -1);
+    gtk_widget_set_size_request(GTK_WIDGET(dev->profile.floating_window), dialog_width, -1);
 #if GTK_CHECK_VERSION(3, 16, 0)
     g_object_set(G_OBJECT(dev->profile.floating_window), "transitions-enabled", FALSE, NULL);
 #endif
@@ -2209,9 +2217,9 @@ static gboolean _on_drag_motion(GtkWidget *widget, GdkDragContext *dc, gint x, g
   {
     double iop_order = -1.0;
     if(module_src->iop_order < module_dest->iop_order)
-      iop_order = dt_ioppr_get_iop_order_after_iop(darktable.develop->iop, module_src, module_dest, 1, 0);
+      iop_order = dt_ioppr_get_iop_order_after_iop(darktable.develop->iop, module_src, module_dest, 1, (darktable.unmuted & DT_DEBUG_IOPORDER));
     else
-      iop_order = dt_ioppr_get_iop_order_before_iop(darktable.develop->iop, module_src, module_dest, 1, 0);
+      iop_order = dt_ioppr_get_iop_order_before_iop(darktable.develop->iop, module_src, module_dest, 1, (darktable.unmuted & DT_DEBUG_IOPORDER));
 
     if(iop_order > 0.0 && iop_order != module_src->iop_order)
       can_moved = TRUE;
@@ -2464,6 +2472,9 @@ void enter(dt_view_t *self)
     g_free(active_plugin);
   }
 
+  // update module multishow state now modules are loaded
+  dt_dev_modules_update_multishow(dev);
+
   // image should be there now.
   float zoom_x, zoom_y;
   dt_dev_check_zoom_bounds(dev, &zoom_x, &zoom_y, DT_ZOOM_FIT, 0, NULL, NULL);
@@ -2498,6 +2509,10 @@ void enter(dt_view_t *self)
     _darkroom_display_second_window(dev);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->second_window.button), TRUE);
   }
+
+  // just make sure at this stage we have only history info into the undo, all automatic
+  // tagging should be ignored.
+  dt_undo_clear(darktable.undo, DT_UNDO_TAGS);
 
   // update accels_window
   darktable.view_manager->accels_window.prevent_refresh = FALSE;
@@ -2622,7 +2637,8 @@ void leave(dt_view_t *self)
   dt_ui_scrollbars_show(darktable.gui->ui, FALSE);
 
   darktable.develop->image_storage.id = -1;
-
+  // darkroom development could have changed a collection, so update that before being back in lightroom
+  dt_collection_update_query(darktable.collection);
   dt_print(DT_DEBUG_CONTROL, "[run_job-] 11 %f in darkroom mode\n", dt_get_wtime());
 }
 
@@ -2846,6 +2862,8 @@ int button_pressed(dt_view_t *self, double x, double y, double pressure, int whi
     dt_control_set_dev_zoom_x(zoom_x);
     dt_control_set_dev_zoom_y(zoom_y);
     dt_dev_invalidate(dev);
+    dt_control_queue_redraw_center();
+    dt_control_navigation_redraw();
     return 1;
   }
   return 0;

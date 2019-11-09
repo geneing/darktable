@@ -279,8 +279,10 @@ static int dt_opencl_device_init(dt_opencl_t *cl, const int dev, cl_device_id *d
 
   if(!image_support)
   {
-    dt_print(DT_DEBUG_OPENCL, "[opencl_init] discarding device %d `%s' due to missing image support.\n", k,
-             infostr);
+    dt_print(DT_DEBUG_OPENCL,
+             "[opencl_init] discarding device %d `%s' - The OpenCL driver "
+             "doesn't provide image support. See also 'clinfo' output.\n",
+             k, infostr);
     res = -1;
     goto end;
   }
@@ -319,10 +321,10 @@ static int dt_opencl_device_init(dt_opencl_t *cl, const int dev, cl_device_id *d
     printf("[opencl_init] device %d: %s \n", k, infostr);
     printf("     GLOBAL_MEM_SIZE:          %.0fMB\n", (double)cl->dev[dev].max_global_mem / 1024.0 / 1024.0);
     (cl->dlocl->symbols->dt_clGetDeviceInfo)(devid, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(infoint), &infoint, NULL);
-    printf("     MAX_WORK_GROUP_SIZE:      %zd\n", infoint);
+    printf("     MAX_WORK_GROUP_SIZE:      %zu\n", infoint);
     (cl->dlocl->symbols->dt_clGetDeviceInfo)(devid, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, sizeof(infoint), &infoint,
                                              NULL);
-    printf("     MAX_WORK_ITEM_DIMENSIONS: %zd\n", infoint);
+    printf("     MAX_WORK_ITEM_DIMENSIONS: %zu\n", infoint);
     printf("     MAX_WORK_ITEM_SIZES:      [ ");
 
     size_t infointtab_size;
@@ -330,7 +332,7 @@ static int dt_opencl_device_init(dt_opencl_t *cl, const int dev, cl_device_id *d
                                     &infointtab_size);
     if(err == CL_SUCCESS)
     {
-      for(size_t i = 0; i < infoint; i++) printf("%zd ", infointtab[i]);
+      for(size_t i = 0; i < infoint; i++) printf("%zu ", infointtab[i]);
       free(infointtab);
       infointtab = NULL;
     }
@@ -398,7 +400,8 @@ static int dt_opencl_device_init(dt_opencl_t *cl, const int dev, cl_device_id *d
   escapedkerneldir = dt_util_str_replace(kerneldir, " ", "\\ ");
 #endif
 
-  options = g_strdup_printf("-cl-mad-enable %s -D%s=1 -I%s",
+  // do not use -cl-fast-relaxed-math, this breaks AMD OpenCL
+  options = g_strdup_printf("-w -cl-finite-math-only %s -D%s=1 -I%s",
                             (cl->dev[dev].nvidia_sm_20 ? " -DNVIDIA_SM_20=1" : ""),
                             dt_opencl_get_vendor_by_id(vendor_id), escapedkerneldir);
   cl->dev[dev].options = strdup(options);
@@ -410,7 +413,7 @@ static int dt_opencl_device_init(dt_opencl_t *cl, const int dev, cl_device_id *d
   g_free(escapedkerneldir);
   escapedkerneldir = NULL;
 
-  const char *clincludes[DT_OPENCL_MAX_INCLUDES] = { "colorspace.cl", "common.h", NULL };
+  const char *clincludes[DT_OPENCL_MAX_INCLUDES] = { "color_conversion.cl", "colorspaces.cl", "colorspace.cl", "common.h", NULL };
   char *includemd5[DT_OPENCL_MAX_INCLUDES] = { NULL };
   dt_opencl_md5sum(clincludes, includemd5);
 
@@ -961,7 +964,7 @@ static void encrypt_tea(unsigned int *arg)
 
 static float tpdf(unsigned int urandom)
 {
-  float frandom = (float)urandom / 0xFFFFFFFFu;
+  float frandom = (float)urandom / (float)0xFFFFFFFFu;
 
   return (frandom < 0.5f ? (sqrtf(2.0f * frandom) - 1.0f) : (1.0f - sqrtf(2.0f * (1.0f - frandom))));
 }

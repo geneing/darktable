@@ -534,6 +534,32 @@ static void _view_lighttable_collection_listener_internal(dt_view_t *self, dt_li
   lib->full_y = 0.0f;
 
   _update_collected_images(self);
+
+  // we ensure selection/image-under-mouse visibility if any
+  // because we may have added/removed a lot of image before this one
+  int cur_id = dt_control_get_mouse_over_id();
+  if(cur_id <= 0)
+  {
+    GList *first_selected = dt_collection_get_selected(darktable.collection, 1);
+    if(first_selected)
+    {
+      cur_id = GPOINTER_TO_INT(first_selected->data);
+      g_list_free(first_selected);
+    }
+  }
+  // we have at least 1 selected image
+  if(cur_id > 0)
+  {
+    gchar *query = dt_util_dstrcat(NULL, "SELECT rowid FROM memory.collected_images WHERE imgid = %d", cur_id);
+    sqlite3_stmt *stmt;
+    DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
+    if(stmt != NULL && sqlite3_step(stmt) == SQLITE_ROW)
+    {
+      _ensure_image_visibility(self, sqlite3_column_int(stmt, 0));
+    }
+    if(stmt) sqlite3_finalize(stmt);
+    g_free(query);
+  }
 }
 
 static void _view_lighttable_selection_listener_internal_preview(dt_view_t *self, dt_library_t *lib)
@@ -607,7 +633,7 @@ static void _view_lighttable_selection_listener_callback(gpointer instance, gpoi
   if(lib->current_layout == DT_LIGHTTABLE_LAYOUT_CULLING)
   {
     int idover = dt_control_get_mouse_over_id();
-    _culling_check_scrolling_mode(self);
+
     // on dynamic mode, nb of image follow selection size
     int nbsel = _culling_get_selection_count();
     if(dt_view_lighttable_get_culling_zoom_mode(darktable.view_manager) == DT_LIGHTTABLE_ZOOM_DYNAMIC)
@@ -615,12 +641,19 @@ static void _view_lighttable_selection_listener_callback(gpointer instance, gpoi
       const int nz = (nbsel <= 1) ? dt_conf_get_int("plugins/lighttable/culling_num_images") : nbsel;
       dt_view_lighttable_set_zoom(darktable.view_manager, nz);
     }
+    else if(nbsel < 1)
+    {
+      // in fixed mode, we want to be sure that we have at least one image selected,
+      // as the first selected image define the start
+      lib->select_deactivate = TRUE;
+      dt_selection_select(darktable.selection, idover);
+      lib->select_deactivate = FALSE;
+    }
     // be carrefull, all shown images should be selected (except if the click was on one of them)
-    if(nbsel > 1)
+    if(nbsel != 1 && !lib->culling_use_selection)
     {
       for(int i = 0; i < lib->slots_count; i++)
       {
-        if(lib->slots[i].imgid == idover) continue;
         sqlite3_stmt *stmt;
         gchar *query = dt_util_dstrcat(NULL, "SELECT rowid FROM main.selected_images WHERE imgid = %d",
                                        lib->slots[i].imgid);
@@ -632,13 +665,21 @@ static void _view_lighttable_selection_listener_callback(gpointer instance, gpoi
           dt_selection_select(darktable.selection, lib->slots[i].imgid);
           lib->select_deactivate = FALSE;
         }
+        else if(lib->slots[i].imgid == idover)
+        {
+          lib->select_deactivate = TRUE;
+          dt_selection_deselect(darktable.selection, lib->slots[i].imgid);
+          lib->select_deactivate = FALSE;
+        }
         sqlite3_finalize(stmt);
         g_free(query);
       }
+      _culling_check_scrolling_mode(self);
       _culling_recreate_slots_at(self, idover);
     }
     else
     {
+      _culling_check_scrolling_mode(self);
       _culling_destroy_slots(self);
       _culling_recreate_slots(self);
     }
@@ -656,6 +697,7 @@ static void _update_collected_images(dt_view_t *self)
   dt_library_t *lib = (dt_library_t *)self->data;
   sqlite3_stmt *stmt;
   int32_t min_before = 0, min_after = -1;
+  int32_t cur_rowid = -1;
 
   /* check if we can get a query from collection */
   gchar *query = g_strdup(dt_collection_get_query(darktable.collection));
@@ -665,7 +707,7 @@ static void _update_collected_images(dt_view_t *self)
   // a temporary (in-memory) table (collected_images).
   //
   // 0. get current lower rowid
-  if (lib->full_preview_id != -1)
+  if(lib->full_preview_id != -1 || lib->current_layout == DT_LIGHTTABLE_LAYOUT_CULLING)
   {
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), "SELECT MIN(rowid) FROM memory.collected_images",
                                 -1, &stmt, NULL);
@@ -674,6 +716,19 @@ static void _update_collected_images(dt_view_t *self)
       min_before = sqlite3_column_int(stmt, 0);
     }
     sqlite3_finalize(stmt);
+  }
+
+  if(lib->current_layout == DT_LIGHTTABLE_LAYOUT_CULLING && lib->slots_count == 1)
+  {
+    gchar *query2
+        = dt_util_dstrcat(NULL, "SELECT rowid FROM memory.collected_images WHERE imgid=%d", lib->slots[0].imgid);
+    DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query2, -1, &stmt, NULL);
+    if(sqlite3_step(stmt) == SQLITE_ROW)
+    {
+      cur_rowid = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    g_free(query2);
   }
 
   // 1. drop previous data
@@ -728,6 +783,22 @@ static void _update_collected_images(dt_view_t *self)
     sqlite3_finalize(stmt);
   }
 
+  if(lib->current_layout == DT_LIGHTTABLE_LAYOUT_CULLING && lib->slots_count == 1)
+  {
+    // note that this adjustment is needed as for a memory table the rowid doesn't start to 1 after the DELETE
+    // above, but rowid is incremented each time we INSERT.
+    cur_rowid += (min_after - min_before);
+
+    char col_query[128] = { 0 };
+    snprintf(col_query, sizeof(col_query), "SELECT imgid FROM memory.collected_images WHERE rowid=%d", cur_rowid);
+    DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), col_query, -1, &stmt, NULL);
+    if(sqlite3_step(stmt) == SQLITE_ROW)
+    {
+      lib->slots[0].imgid = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+  }
+
   if(lib->single_img_id != -1 && min_after != -1)
   {
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
@@ -760,7 +831,8 @@ static void _set_position(dt_view_t *self, uint32_t pos)
   // only reset position when not already with a changed offset, this is because if the offset is
   // already changed it means that we are about to change the display (zoom in or out for example).
   // And in this case a new offset is already positioned and we don't want to reset it.
-  if(!lib->offset_changed)
+  if(!lib->offset_changed
+     || dt_view_manager_get_current_view(darktable.view_manager) != darktable.view_manager->proxy.lighttable.view)
   {
     lib->first_visible_filemanager = lib->first_visible_zoomable = lib->offset = pos;
     lib->offset_changed = TRUE;
@@ -967,7 +1039,7 @@ void cleanup(dt_view_t *self)
   dt_conf_set_float("lighttable/ui/zoom_y", lib->zoom_y);
   if(lib->audio_player_id != -1) _stop_audio(lib);
   g_hash_table_destroy(lib->thumbs_table);
-  free(lib->full_res_thumb);
+  dt_free_align(lib->full_res_thumb);
   free(lib->slots);
   free(self->data);
 }
@@ -1018,8 +1090,11 @@ static int expose_filemanager(dt_view_t *self, cairo_t *cr, int32_t width, int32
 
   lib->images_in_row = iir;
 
-  const float wd = width / (float)iir;
-  const float ht = width / (float)iir;
+  /* empty space between thumbnails */
+  const float line_width = DT_PIXEL_APPLY_DPI(2.0);
+
+  const float wd = (width - line_width)  / (float)iir;
+  const float ht = (width - line_width) / (float)iir;
   lib->thumb_size = wd;
 
   int pi = pointerx / (float)wd;
@@ -1109,7 +1184,7 @@ static int expose_filemanager(dt_view_t *self, cairo_t *cr, int32_t width, int32
   /* update scroll borders */
   int shown_rows = ceilf((float)lib->collection_count / iir);
   if(iir > 1) shown_rows += max_rows - 2;
-  dt_view_set_scrollbar(self, 0, 0, 1, 1, offset, 0, shown_rows * iir, (max_rows - 1) * iir);
+  dt_view_set_scrollbar(self, 0, 0, 0, 0, offset, 0, shown_rows * iir, (max_rows - 1) * iir);
 
   /* let's reset and reuse the main_query statement */
   DT_DEBUG_SQLITE3_CLEAR_BINDINGS(lib->statements.main_query);
@@ -1265,6 +1340,7 @@ end_query_cache:
           dt_control_set_mouse_over_id(mouse_over_id);
 
         cairo_save(cr);
+        cairo_translate(cr, line_width, line_width);
 
         if(iir == 1)
         {
@@ -1288,10 +1364,10 @@ end_query_cache:
           params.imgid = id;
           params.mouse_over = (id == mouse_over_id);
           params.cr = cr;
-          params.width = wd;
-          params.height = iir == 1 ? height : ht;
-          params.px = pi == col && pj == row ? img_pointerx : -1;
-          params.py = pi == col && pj == row ? img_pointery : -1;
+          params.width = wd - line_width;
+          params.height = (iir == 1) ? height : ht - line_width;
+          params.px = (pi == col && pj == row) ? img_pointerx : -1;
+          params.py = (pi == col && pj == row) ? img_pointery : -1;
           params.zoom = iir;
           const int thumb_missed = dt_view_image_expose(&params);
 
@@ -1299,8 +1375,8 @@ end_query_cache:
           {
             lib->pointed_img_x = col * wd;
             lib->pointed_img_y = row * ht;
-            lib->pointed_img_wd = wd;
-            lib->pointed_img_ht = iir == 1 ? height : ht;
+            lib->pointed_img_wd = wd - line_width;
+            lib->pointed_img_ht = (iir == 1) ? height : ht - line_width;
             lib->pointed_img_over = dt_view_guess_image_over(lib->pointed_img_wd, lib->pointed_img_ht, iir,
                                                              img_pointerx, img_pointery);
           }
@@ -1328,6 +1404,9 @@ escape_image_loop:
   if(!lib->pan && (iir != 1 || mouse_over_id != -1)) dt_control_set_mouse_over_id(mouse_over_id);
 
   // and now the group borders
+
+  cairo_set_line_width(cr, line_width);
+
   cairo_save(cr);
   current_image = 0;
   if(lib->offset < 0)
@@ -1340,18 +1419,18 @@ escape_image_loop:
   {
     // clear rows & cols around thumbs, needed to clear the group borders
     cairo_save(cr);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_SQUARE);
     dt_gui_gtk_set_source_rgb(cr, DT_GUI_COLOR_LIGHTTABLE_BG);
-    for(int row = 0; row < max_rows; row++)
+    for(int row = 0; row < max_rows + 1; row++)
     {
-      cairo_move_to(cr, 0, row * ht);
-      cairo_line_to(cr, width, row * ht);
+      cairo_move_to(cr, line_width / 2.0, row * ht + line_width / 2.0);
+      cairo_line_to(cr, width + line_width / 2.0, row * ht + line_width / 2.0);
     }
-    for(int col = 0; col < max_cols; col++)
+    for(int col = 0; col < max_cols + 1; col++)
     {
-      cairo_move_to(cr, col * wd, 0);
-      cairo_line_to(cr, col * wd, height);
+      cairo_move_to(cr, col * wd + line_width / 2.0, line_width / 2.0);
+      cairo_line_to(cr, col * wd + line_width / 2.0, height + line_width / 2.0);
     }
-    cairo_set_line_width(cr, 0.011 * wd);
     cairo_stroke(cr);
     cairo_restore(cr);
   }
@@ -1368,6 +1447,8 @@ escape_image_loop:
     DT_DEBUG_SQLITE3_BIND_INT(lib->statements.is_grouped, 2, mouse_over_id);
     if(sqlite3_step(lib->statements.is_grouped) != SQLITE_ROW) mouse_over_group = -1;
   }
+
+  cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 
   for(int row = 0; row < max_rows; row++)
   {
@@ -1431,8 +1512,8 @@ escape_image_loop:
           }
           if(neighbour_group != group_id)
           {
-            cairo_move_to(cr, 0, 0);
-            cairo_line_to(cr, wd, 0);
+            cairo_move_to(cr, line_width / 2.0, line_width / 2.0);
+            cairo_line_to(cr, wd + line_width / 2.0, line_width / 2.0);
           }
           // left border
           neighbour_group = -1;
@@ -1448,8 +1529,8 @@ escape_image_loop:
           }
           if(neighbour_group != group_id)
           {
-            cairo_move_to(cr, 0, 0);
-            cairo_line_to(cr, 0, ht);
+            cairo_move_to(cr, line_width / 2.0, line_width /2.0);
+            cairo_line_to(cr, line_width / 2.0, ht + line_width / 2.0);
           }
           // bottom border
           neighbour_group = -1;
@@ -1465,8 +1546,8 @@ escape_image_loop:
           }
           if(neighbour_group != group_id)
           {
-            cairo_move_to(cr, 0, ht);
-            cairo_line_to(cr, wd, ht);
+            cairo_move_to(cr, line_width / 2.0, ht + line_width / 2.0);
+            cairo_line_to(cr, wd + line_width / 2.0, ht + line_width / 2.0);
           }
           // right border
           neighbour_group = -1;
@@ -1482,10 +1563,10 @@ escape_image_loop:
           }
           if(neighbour_group != group_id)
           {
-            cairo_move_to(cr, wd, 0);
-            cairo_line_to(cr, wd, ht);
+            cairo_move_to(cr, wd + line_width / 2.0, line_width / 2.0);
+            cairo_line_to(cr, wd + line_width / 2.0, ht + line_width / 2.0);
           }
-          cairo_set_line_width(cr, 0.01 * wd);
+          cairo_set_line_width(cr, line_width);
           cairo_stroke(cr);
         }
 
@@ -1597,6 +1678,8 @@ static int expose_zoomable(dt_view_t *self, cairo_t *cr, int32_t width, int32_t 
   const float wd = width / zoom;
   const float ht = width / zoom;
   lib->thumb_size = wd;
+
+  const float line_width = DT_PIXEL_APPLY_DPI(2.0);
 
   static float oldzoom = -1;
   if(oldzoom < 0) oldzoom = zoom;
@@ -1810,8 +1893,8 @@ static int expose_zoomable(dt_view_t *self, cairo_t *cr, int32_t width, int32_t 
           params.imgid = id;
           params.mouse_over = (id == mouse_over_id);
           params.cr = cr;
-          params.width = wd;
-          params.height = zoom == 1 ? height : ht;
+          params.width = wd - 2 * line_width;
+          params.height = (zoom == 1) ? height : ht - line_width;
           params.px = img_pointerx;
           params.py = img_pointery;
           params.zoom = zoom;
@@ -2001,7 +2084,7 @@ static gboolean _culling_recreate_slots(dt_view_t *self)
   dt_library_t *lib = (dt_library_t *)self->data;
 
   int display_first_image = -1;
-  // special if we start dt in culling + fxed + selection
+  // special if we start dt in culling + fixed + selection
   if(!lib->already_started && lib->culling_use_selection
      && dt_view_lighttable_get_culling_zoom_mode(darktable.view_manager) == DT_LIGHTTABLE_ZOOM_FIXED)
   {
@@ -2587,7 +2670,7 @@ static int expose_full_preview(dt_view_t *self, cairo_t *cr, int32_t width, int3
       gboolean from_cache = TRUE;
       char filename[PATH_MAX] = { 0 };
       dt_image_full_path(lib->full_preview_id, filename, sizeof(filename), &from_cache);
-      free(lib->full_res_thumb);
+      dt_free_align(lib->full_res_thumb);
       lib->full_res_thumb = NULL;
       dt_colorspaces_color_profile_type_t color_space;
       if(!dt_imageio_large_thumbnail(filename, &lib->full_res_thumb,
@@ -3090,7 +3173,7 @@ static gboolean rating_key_accel_callback(GtkAccelGroup *accel_group, GObject *a
 
   dt_collection_update_query(darktable.collection); // update the counter
 
-  if(layout != DT_LIGHTTABLE_LAYOUT_CULLING && lib->collection_count != _culling_get_selection_count())
+  if(layout != DT_LIGHTTABLE_LAYOUT_CULLING && lib->collection_count != dt_collection_get_count(darktable.collection))
   {
     // some images disappeared from collection. Selection is now invisible.
     // lib->collection_count  --> before the rating
@@ -3730,11 +3813,11 @@ void mouse_moved(dt_view_t *self, double x, double y, double pressure, int which
   // get the max zoom of all images
   const int max_in_memory_images = _get_max_in_memory_images();
   float fz = lib->full_zoom;
-  if(get_layout() == DT_LIGHTTABLE_LAYOUT_CULLING && lib->slots_count <= max_in_memory_images)
+  if(lib->pan && get_layout() == DT_LIGHTTABLE_LAYOUT_CULLING && lib->slots_count <= max_in_memory_images)
   {
     for(int i = 0; i < lib->slots_count; i++)
     {
-      fz = fmaxf(fz, lib->full_zoom + lib->fp_surf[0].zoom_delta);
+      fz = fmaxf(fz, lib->full_zoom + lib->fp_surf[i].zoom_delta);
     }
   }
 
@@ -3910,9 +3993,24 @@ int button_pressed(dt_view_t *self, double x, double y, double pressure, int whi
         // namely until the pointer has moved a little distance. The code taking
         // care of this is in expose(). Pan only makes sense in zoomable lt.
         if(_is_custom_image_order_actif(self) || layout == DT_LIGHTTABLE_LAYOUT_ZOOMABLE
-           || (lib->full_preview_id > -1 && lib->full_zoom > 1.0f)
-           || (get_layout() == DT_LIGHTTABLE_LAYOUT_CULLING && lib->full_zoom > 1.0f))
+           || (lib->full_preview_id > -1 && lib->full_zoom > 1.0f))
           begin_pan(lib, x, y);
+
+        // in culling mode, we allow to pan only if one image is zoomed
+        if(get_layout() == DT_LIGHTTABLE_LAYOUT_CULLING)
+        {
+          if(lib->slots_count <= _get_max_in_memory_images())
+          {
+            for(int i = 0; i < lib->slots_count; i++)
+            {
+              if(lib->full_zoom + lib->fp_surf[i].zoom_delta > 1.0f)
+              {
+                begin_pan(lib, x, y);
+                break;
+              }
+            }
+          }
+        }
 
         if(layout == DT_LIGHTTABLE_LAYOUT_FILEMANAGER && lib->using_arrows)
         {
@@ -4336,8 +4434,9 @@ void init_key_accels(dt_view_t *self)
   // Preview key
   dt_accel_register_view(self, NC_("accel", "preview"), GDK_KEY_w, 0);
   dt_accel_register_view(self, NC_("accel", "preview with focus detection"), GDK_KEY_w, GDK_CONTROL_MASK);
-  dt_accel_register_view(self, NC_("accel", "sticky preview"), 0, 0);
-  dt_accel_register_view(self, NC_("accel", "sticky preview with focus detection"), 0, 0);
+  dt_accel_register_view(self, NC_("accel", "sticky preview"), GDK_KEY_w, GDK_MOD1_MASK);
+  dt_accel_register_view(self, NC_("accel", "sticky preview with focus detection"), GDK_KEY_w,
+                         GDK_MOD1_MASK | GDK_CONTROL_MASK);
 
   // undo/redo
   dt_accel_register_view(self, NC_("accel", "undo"), GDK_KEY_z, GDK_CONTROL_MASK);

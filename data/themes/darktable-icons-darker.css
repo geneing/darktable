@@ -16,7 +16,7 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-@import url("darktable-elegant.css");
+@import url("darktable-elegant-darker.css");
 
 #iop-panel-icon-sharpen
 {
@@ -547,7 +547,12 @@
 #iop-panel-icon-globaltonemap,
 #iop-panel-icon-colorcontrast,
 #iop-panel-icon-bilat,
-#iop-panel-icon-profile_gamma
+#iop-panel-icon-profile_gamma,
+#iop-panel-icon-filmicrgb,
+#iop-panel-icon-rgblevels,
+#iop-panel-icon-lut3d,
+#iop-panel-icon-toneequal,
+#iop-panel-icon-equalizer
 {
     background-image: url('../pixmaps/plugins/darkroom/default.svg');
     background-size: contain;

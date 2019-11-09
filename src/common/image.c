@@ -135,14 +135,7 @@ int dt_image_is_raw(const dt_image_t *img)
 
 int dt_image_is_monochrome(const dt_image_t *img)
 {
-  if(strncmp(img->exif_maker, "Leica Camera AG", 15) != 0) return 0;
-
-  gchar *tmp_model = g_ascii_strdown(img->exif_model, -1);
-
-  const int res = strstr(tmp_model, "monochrom") != NULL;
-  g_free(tmp_model);
-
-  return res;
+   return (img->flags & DT_IMAGE_MONOCHROME);
 }
 
 const char *dt_image_film_roll_name(const char *path)
@@ -1304,6 +1297,8 @@ void dt_image_init(dt_image_t *img)
   img->wb_coeffs[1] = NAN;
   img->wb_coeffs[2] = NAN;
   img->wb_coeffs[3] = NAN;
+  img->usercrop[0] = img->usercrop[1] = 0;
+  img->usercrop[2] = img->usercrop[3] = 1;
   img->cache_entry = 0;
 }
 
@@ -1383,6 +1378,7 @@ int32_t dt_image_rename(const int32_t imgid, const int32_t filmid, const gchar *
     // move image
     GError *moveError = NULL;
     gboolean moveStatus = g_file_move(old, new, 0, NULL, NULL, NULL, &moveError);
+
     if(moveStatus)
     {
       // statement for getting ids of the image to be moved and its duplicates
@@ -1397,7 +1393,7 @@ int32_t dt_image_rename(const int32_t imgid, const int32_t filmid, const gchar *
       DT_DEBUG_SQLITE3_BIND_INT(duplicates_stmt, 1, imgid);
       while(sqlite3_step(duplicates_stmt) == SQLITE_ROW)
       {
-        int32_t id = sqlite3_column_int(duplicates_stmt, 0);
+        const int32_t id = sqlite3_column_int(duplicates_stmt, 0);
         dup_list = g_list_append(dup_list, GINT_TO_POINTER(id));
         gchar oldxmp[PATH_MAX] = { 0 }, newxmp[PATH_MAX] = { 0 };
         g_strlcpy(oldxmp, oldimg, sizeof(oldxmp));
@@ -1422,7 +1418,7 @@ int32_t dt_image_rename(const int32_t imgid, const int32_t filmid, const gchar *
       // would return wrong version!
       while(dup_list)
       {
-        int id = GPOINTER_TO_INT(dup_list->data);
+        const int id = GPOINTER_TO_INT(dup_list->data);
         dt_image_t *img = dt_image_cache_get(darktable.image_cache, id, 'w');
         img->film_id = filmid;
         if(newname)
@@ -1487,11 +1483,17 @@ int32_t dt_image_rename(const int32_t imgid, const int32_t filmid, const gchar *
       {
 	dt_control_log(_("error moving `%s': file not found"), oldimg);
       }
-      else if(g_error_matches(moveError, G_IO_ERROR, G_IO_ERROR_EXISTS) || g_error_matches(moveError, G_IO_ERROR, G_IO_ERROR_IS_DIRECTORY))
+      // only display error message if newname is set (renaming and
+      // not moving) as when moving it can be the case where a
+      // duplicate is being moved, so only the .xmp are present but
+      // the original file may already have been moved.
+      else if(newname
+              && (g_error_matches(moveError, G_IO_ERROR, G_IO_ERROR_EXISTS)
+                  || g_error_matches(moveError, G_IO_ERROR, G_IO_ERROR_IS_DIRECTORY)))
       {
 	dt_control_log(_("error moving `%s' -> `%s': file exists"), oldimg, newimg);
       }
-      else
+      else if(newname)
       {
 	dt_control_log(_("error moving `%s' -> `%s'"), oldimg, newimg);
       }
@@ -2123,6 +2125,24 @@ char *dt_image_get_text_path(const int32_t imgid)
   dt_image_full_path(imgid, image_path, sizeof(image_path), &from_cache);
 
   return dt_image_get_text_path_from_path(image_path);
+}
+
+int dt_image_get_iop_order_version(const int32_t imgid)
+{
+  int iop_order_version = 0;
+
+  // check current iop order version
+  sqlite3_stmt *stmt;
+  DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), "SELECT iop_order_version FROM main.images WHERE id = ?1",
+                              -1, &stmt, NULL);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, imgid);
+  if(sqlite3_step(stmt) == SQLITE_ROW)
+  {
+    iop_order_version = sqlite3_column_int(stmt, 0);
+  }
+  sqlite3_finalize(stmt);
+
+  return iop_order_version;
 }
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
