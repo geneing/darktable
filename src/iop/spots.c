@@ -33,7 +33,7 @@
 
 // this is the version of the modules parameters,
 // and includes version information about compile-time dt
-DT_MODULE_INTROSPECTION(2, dt_iop_spots_params_t)
+DT_MODULE_INTROSPECTION(3, dt_iop_spots_params_t)
 
 typedef struct dt_iop_spots_params_t
 {
@@ -45,7 +45,7 @@ typedef struct dt_iop_spots_gui_data_t
 {
   GtkLabel *label;
   GtkWidget *method;
-  GtkWidget *bt_path, *bt_circle, *bt_ellipse;
+  GtkWidget *bt_path, *bt_circle, *bt_ellipse, *bt_brush;
 } dt_iop_spots_gui_data_t;
 
 typedef struct dt_iop_spots_params_t dt_iop_spots_data_t;
@@ -171,7 +171,8 @@ static void _reset_form_creation(GtkWidget *widget, dt_iop_module_t *self)
   dt_iop_spots_gui_data_t *g = (dt_iop_spots_gui_data_t *)self->gui_data;
   if(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g->bt_path)) ||
       gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g->bt_circle)) ||
-      gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g->bt_ellipse)))
+      gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g->bt_ellipse)) ||
+      gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g->bt_brush)))
   {
     // we unset the creation mode
     dt_masks_change_form_gui(NULL);
@@ -179,49 +180,43 @@ static void _reset_form_creation(GtkWidget *widget, dt_iop_module_t *self)
   if (widget != g->bt_path) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_path), FALSE);
   if (widget != g->bt_circle) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_circle), FALSE);
   if (widget != g->bt_ellipse) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_ellipse), FALSE);
+  if (widget != g->bt_brush) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_brush), FALSE);
+}
+
+
+static gboolean _add_mask(GtkWidget *widget, GdkEventButton *e, dt_iop_module_t *self, dt_masks_type_t mask_type)
+{
+  _reset_form_creation(widget, self);
+  if(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget))) return FALSE;
+  // we want to be sure that the iop has focus
+  dt_iop_request_focus(self);
+  // we create the new form
+  dt_masks_form_t *spot = dt_masks_create(mask_type | DT_MASKS_CLONE);
+  dt_masks_change_form_gui(spot);
+  darktable.develop->form_gui->creation = TRUE;
+  darktable.develop->form_gui->creation_module = self;
+  dt_control_queue_redraw_center();
+  return FALSE;
 }
 
 static gboolean _add_path(GtkWidget *widget, GdkEventButton *e, dt_iop_module_t *self)
 {
-  _reset_form_creation(widget, self);
-  if(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget))) return FALSE;
-  // we want to be sure that the iop has focus
-  dt_iop_request_focus(self);
-  // we create the new form
-  dt_masks_form_t *form = dt_masks_create(DT_MASKS_PATH | DT_MASKS_CLONE);
-  dt_masks_change_form_gui(form);
-  darktable.develop->form_gui->creation = TRUE;
-  darktable.develop->form_gui->creation_module = self;
-  dt_control_queue_redraw_center();
-  return FALSE;
+  return _add_mask( widget, e, self, DT_MASKS_PATH);
 }
+
 static gboolean _add_circle(GtkWidget *widget, GdkEventButton *e, dt_iop_module_t *self)
 {
-  _reset_form_creation(widget, self);
-  if(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget))) return FALSE;
-  // we want to be sure that the iop has focus
-  dt_iop_request_focus(self);
-  // we create the new form
-  dt_masks_form_t *spot = dt_masks_create(DT_MASKS_CIRCLE | DT_MASKS_CLONE);
-  dt_masks_change_form_gui(spot);
-  darktable.develop->form_gui->creation = TRUE;
-  darktable.develop->form_gui->creation_module = self;
-  dt_control_queue_redraw_center();
-  return FALSE;
+  return _add_mask( widget, e, self, DT_MASKS_CIRCLE);
 }
+
 static gboolean _add_ellipse(GtkWidget *widget, GdkEventButton *e, dt_iop_module_t *self)
 {
-  _reset_form_creation(widget, self);
-  if(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget))) return FALSE;
-  // we want to be sure that the iop has focus
-  dt_iop_request_focus(self);
-  // we create the new form
-  dt_masks_form_t *spot = dt_masks_create(DT_MASKS_ELLIPSE | DT_MASKS_CLONE);
-  dt_masks_change_form_gui(spot);
-  darktable.develop->form_gui->creation = TRUE;
-  darktable.develop->form_gui->creation_module = self;
-  dt_control_queue_redraw_center();
-  return FALSE;
+  return _add_mask( widget, e, self, DT_MASKS_ELLIPSE);
+}
+
+static gboolean _add_brush(GtkWidget *widget, GdkEventButton *e, dt_iop_module_t *self)
+{
+  return _add_mask( widget, e, self, DT_MASKS_BRUSH);
 }
 
 
@@ -361,6 +356,12 @@ static int masks_get_delta(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
     dt_masks_point_ellipse_t *pt = (dt_masks_point_ellipse_t *)form->points->data;
 
     res = masks_point_calc_delta(self, piece, roi, pt->center, form->source, dx, dy);
+  }
+  else if(form->type & DT_MASKS_BRUSH)
+  {
+    dt_masks_point_brush_t *pt = (dt_masks_point_brush_t *)form->points->data;
+
+    res = masks_point_calc_delta(self, piece, roi, pt->corner, form->source, dx, dy);
   }
 
   return res;
@@ -596,6 +597,7 @@ void gui_focus(struct dt_iop_module_t *self, gboolean in)
       gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_path), FALSE);
       gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_circle), FALSE);
       gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_ellipse), FALSE);
+      gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_brush), FALSE);
       dt_masks_set_edit_mode(self, DT_MASKS_EDIT_OFF);
     }
   }
@@ -633,7 +635,7 @@ void gui_update(dt_iop_module_t *self)
   gtk_label_set_text(g->label, str);
   g_free(str);
   // update buttons status
-  int b1 = 0, b2 = 0, b3 = 0;
+  int b1 = 0, b2 = 0, b3 = 0, b4 = 0;
   if(self->dev->form_gui && self->dev->form_visible && self->dev->form_gui->creation
      && self->dev->form_gui->creation_module == self)
   {
@@ -643,10 +645,13 @@ void gui_update(dt_iop_module_t *self)
       b2 = 1;
     else if(self->dev->form_visible->type & DT_MASKS_ELLIPSE)
       b3 = 1;
+    else if(self->dev->form_visible->type & DT_MASKS_BRUSH)
+      b4 = 1;
   }
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_circle), b1);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_path), b2);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_ellipse), b3);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_brush), b4);
 }
 
 void gui_init(dt_iop_module_t *self)
@@ -664,7 +669,7 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_combobox_add(g->method, _("heal"));
   dt_bauhaus_combobox_set(g->method, 0);
   gtk_box_pack_start(GTK_BOX(self->widget), g->method, TRUE, TRUE, 0);
-  gtk_widget_set_tooltip_text(g->method, _("inpaint automatically finds matching image\nheal requires manual selection"));
+  gtk_widget_set_tooltip_text(g->method, _("inpaint automatically finds best fill\nheal requires manual selection"));
 
   GtkWidget *label = gtk_label_new(_("number of strokes:"));
   gtk_box_pack_start(GTK_BOX(hbox), label, FALSE, TRUE, 0);
@@ -692,6 +697,13 @@ void gui_init(dt_iop_module_t *self)
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_circle), FALSE);
   gtk_box_pack_end(GTK_BOX(hbox), g->bt_circle, FALSE, FALSE, 0);
 
+  g->bt_brush
+      = dtgtk_togglebutton_new(dtgtk_cairo_paint_masks_brush, CPF_STYLE_FLAT | CPF_DO_NOT_USE_BORDER, NULL);
+  g_signal_connect(G_OBJECT(g->bt_brush), "button-press-event", G_CALLBACK(_add_brush), self);
+  gtk_widget_set_tooltip_text(g->bt_brush, _("add brush"));
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_brush), FALSE);
+  gtk_box_pack_end(GTK_BOX(hbox), g->bt_brush, FALSE, FALSE, 0);
+
   gtk_box_pack_start(GTK_BOX(hbox), GTK_WIDGET(g->label), FALSE, TRUE, 0);
   gtk_box_pack_start(GTK_BOX(self->widget), hbox, TRUE, TRUE, 0);
 }
@@ -716,6 +728,7 @@ void init_key_accels (dt_iop_module_so_t *module)
   dt_accel_register_iop (module, TRUE, NC_("accel", "spot circle tool"),   0, 0);
   dt_accel_register_iop (module, TRUE, NC_("accel", "spot ellipse tool"),   0, 0);
   dt_accel_register_iop (module, TRUE, NC_("accel", "spot path tool"),     0, 0);
+  dt_accel_register_iop (module, TRUE, NC_("accel", "spot brush tool"),     0, 0);
   dt_accel_register_iop (module, TRUE, NC_("accel", "spot show or hide"),  0, 0);
 }
 
@@ -736,6 +749,16 @@ static gboolean _add_ellipse_key_accel(GtkAccelGroup *accel_group, GObject *acce
   const dt_iop_spots_gui_data_t *g = (dt_iop_spots_gui_data_t *) module->gui_data;
   _add_ellipse(GTK_WIDGET(g->bt_ellipse), NULL, module);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_ellipse), TRUE);
+  return TRUE;
+}
+
+static gboolean _add_brush_key_accel(GtkAccelGroup *accel_group, GObject *acceleratable, guint keyval,
+                                       GdkModifierType modifier, gpointer data)
+{
+  dt_iop_module_t *module = (dt_iop_module_t *)data;
+  const dt_iop_spots_gui_data_t *g = (dt_iop_spots_gui_data_t *) module->gui_data;
+  _add_brush(GTK_WIDGET(g->bt_brush), NULL, module);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_brush), TRUE);
   return TRUE;
 }
 
@@ -766,6 +789,9 @@ void connect_key_accels (dt_iop_module_t *module)
 
   closure = g_cclosure_new(G_CALLBACK(_add_ellipse_key_accel), (gpointer)module, NULL);
   dt_accel_connect_iop (module, "spot ellipse tool", closure);
+
+  closure = g_cclosure_new(G_CALLBACK(_add_brush_key_accel), (gpointer)module, NULL);
+  dt_accel_connect_iop (module, "spot brush tool", closure);
 
   closure = g_cclosure_new(G_CALLBACK(_add_path_key_accel), (gpointer)module, NULL);
   dt_accel_connect_iop (module, "spot path tool", closure);
