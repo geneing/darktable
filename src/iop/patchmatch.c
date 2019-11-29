@@ -653,6 +653,7 @@ void minimizeLinkNNF(NNF_P nnf, int x, int y, int dir)
             nnf->field[x][y][2] = dp;
         }
     }
+
     //Propagation Left/Right
     if (y-dir>0 && y-dir<nnf->input->image->width) {
         xp = nnf->field[x][y-dir][0];
@@ -664,13 +665,13 @@ void minimizeLinkNNF(NNF_P nnf, int x, int y, int dir)
             nnf->field[x][y][2] = dp;
         }
     }
+
     //Random search
     wi=MAX(nnf->output->image->width, nnf->output->image->height);
     xpi=nnf->field[x][y][0];
     ypi=nnf->field[x][y][1];
-    int r=0;
     while (wi>0) {
-        r=(rand() % (2*wi)) - wi;
+        int r=(rand() % (2*wi)) - wi;
         xp = xpi + r;
         r=(rand() % (2*wi)) - wi;
         yp = ypi + r;
@@ -691,21 +692,23 @@ void minimizeLinkNNF(NNF_P nnf, int x, int y, int dir)
 // multi-pass NN-field minimization (see "PatchMatch" - page 4)
 void minimizeNNF(NNF_P nnf, int pass)
 {
-    int i, y, x;
-    int min_x=0, min_y=0, max_y=nnf->input->image->width-1, max_x=nnf->input->image->height-1;
+    int min_x=0, min_y=0;
+    int max_y=nnf->input->image->width-1;
+    int max_x=nnf->input->image->height-1;
+
     // multi-pass minimization
-    for (i=0;i<pass;i++) {
+    for (int i=0; i<pass; i++) {
         // scanline order
-        for (x=min_x;x<max_x;++x)
-            for (y=min_y;y<=max_y;++y)
+        for (int x=min_x; x<max_x; ++x)
+            for (int y=min_y; y<=max_y; ++y)
                 if (nnf->field[x][y][2]>0)
-                    minimizeLinkNNF(nnf, x,y,+1);
+                    minimizeLinkNNF(nnf, x, y, +1);
 
         // reverse scanline order
-        for (x=max_x;x>=min_x;x--)
-            for (y=max_y;y>=min_y;y--)
+        for (int x=max_x; x>=min_x; x--)
+            for (int y=max_y; y>=min_y; y--)
                 if (nnf->field[x][y][2]>0)
-                    minimizeLinkNNF(nnf, x,y,-1);
+                    minimizeLinkNNF(nnf, x, y, -1);
     }
 }
 
@@ -748,23 +751,21 @@ void addEltInpaintingPyramid(Inpaint_P imp, MaskedImage_P elt)
 // Maximization Step : Maximum likelihood of target pixel
 void MaximizationStep(MaskedImage_P target, float*** vote)
 {
-    int y, x, H, W, r, g, b;
+    int y, x, H, W;
     H = target->image->height;
     W = target->image->width;
     for( x=0 ; x<H ; ++x){
         for( y=0 ; y<W ; ++y){
             if (vote[x][y][3]>0) {
-                r = (int) (vote[x][y][0]/vote[x][y][3]);
-                g = (int) (vote[x][y][1]/vote[x][y][3]);
-                b = (int) (vote[x][y][2]/vote[x][y][3]);
+                int r = (int) (vote[x][y][0]/vote[x][y][3]);
+                int g = (int) (vote[x][y][1]/vote[x][y][3]);
+                int b = (int) (vote[x][y][2]/vote[x][y][3]);
 
                 setSampleMaskedImage(target, x, y, 0, r );
                 setSampleMaskedImage(target, x, y, 1, g );
                 setSampleMaskedImage(target, x, y, 2, b );
                 setMask(target, x, y, 0);
             }
-
-
         }
     }
 }
@@ -841,11 +842,11 @@ void ExpectationStep(NNF_P nnf, int sourceToTarget, float*** vote, MaskedImage_P
 // Returns a double sized target image
 MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
 {
-    int emloop, x, y, H, W, i, j;
+    int emloop, H, W;
     float*** vote;
 
     int iterEM = 1+2*level;
-    int iterNNF = (int)(min1(7,1+level));
+    int iterNNF = MIN(7,1+level);
 
     int upscaled;
     MaskedImage_P newsource;
@@ -853,11 +854,11 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
     MaskedImage_P target = imp->nnf_SourceToTarget->output;
     MaskedImage_P newtarget = NULL;
 
-    printf("EM loop (em=%d,nnf=%d) : ", iterEM, iterNNF);
+    //printf("EM loop (em=%d,nnf=%d) : ", iterEM, iterNNF);
 
     // EM Loop
-    for (emloop=1;emloop<=iterEM;emloop++) {
-        printf(" %d", 1+iterEM-emloop);
+    for (emloop=1; emloop<=iterEM; emloop++) {
+        //printf(" %d", 1+iterEM-emloop);
         // set the new target as current target
         if (newtarget!=NULL) {
             imp->nnf_SourceToTarget->output = newtarget;
@@ -869,8 +870,8 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
         H = source->image->height;
         W = source->image->width;
         // we force the link between unmasked patch in source/target
-        for ( x=0 ; x<H; ++x)
-            for ( y=0 ; y<W ; ++y)
+        for (int x=0 ; x<H; ++x)
+            for (int y=0 ; y<W ; ++y)
                 if (!constainsMasked(source, x, y, imp->radius)) {
                     imp->nnf_SourceToTarget->field[x][y][0] = x;
                     imp->nnf_SourceToTarget->field[x][y][1] = y;
@@ -879,8 +880,8 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
 
         H = target->image->height;
         W = target->image->width;
-        for ( x=0 ; x<H ; ++x)
-            for ( y=0 ; y<W ; ++y)
+        for (int x=0 ; x<H ; ++x)
+            for (int y=0 ; y<W ; ++y)
                 if (!constainsMasked(source, x, y, imp->radius)) {
                     imp->nnf_TargetToSource->field[x][y][0] = x;
                     imp->nnf_TargetToSource->field[x][y][1] = y;
@@ -911,9 +912,9 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
         // votes for best patch from NNF Source->Target (completeness) and Target->Source (coherence)
 
         vote = (float ***)malloc(newtarget->image->height*sizeof(float **));
-        for ( i=0 ; i<newtarget->image->height ; ++i ){
+        for (int i=0 ; i<newtarget->image->height ; ++i ){
             vote[i] = (float **)malloc(newtarget->image->width*sizeof(float *));
-            for  ( j=0 ; j<newtarget->image->width ; ++j) {
+            for  (int j=0 ; j<newtarget->image->width ; ++j) {
                 vote[i][j] = (float *)calloc(4, sizeof(float));
             }
         }
@@ -926,8 +927,8 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
         // compile votes and update pixel values
         MaximizationStep(newtarget, vote);
 
-        for (i=0;i<newtarget->image->height;i++) {
-            for (j=0;j<newtarget->image->width;j++)
+        for (int i=0;i<newtarget->image->height;i++) {
+            for (int j=0;j<newtarget->image->width;j++)
                 free(vote[i][j]);
 
             free(vote[i]);
@@ -935,7 +936,7 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
         free(vote);
     }
 
-    printf("\n");
+    //printf("\n");
 
     return newtarget;
 }
@@ -944,9 +945,8 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
 IplImage* inpaint_impl(IplImage* input, mask_t* mask, int radius)
 {
     Inpaint_P imp = (Inpaint_P) malloc(sizeof(Inpaint_T));
-
-    int level, y, x;
     NNF_P new_nnf, new_nnf_rev;
+
     // initial image
     imp->initial = initMaskedImage(input, mask);
 
@@ -966,7 +966,7 @@ IplImage* inpaint_impl(IplImage* input, mask_t* mask, int radius)
     int maxlevel=imp->nbEltPyramid;
 
     // for each level of the pyramid
-    for (level=maxlevel-1 ; level>0 ; level--) {
+    for (int level=maxlevel-1 ; level>0 ; level--) {
 
         // create Nearest-Neighbor Fields (direct and reverse)
         source = imp->pyramid[level];
@@ -978,8 +978,8 @@ IplImage* inpaint_impl(IplImage* input, mask_t* mask, int radius)
 
             // we consider that the target contains no masked pixels in the firt time
 
-            for( x = 0 ; x < target -> image -> height ; x++ )
-                for( y = 0 ; y < target -> image -> width ; y++ )
+            for(int x = 0 ; x < target -> image -> height ; x++ )
+                for(int y = 0 ; y < target -> image -> width ; y++ )
                     setMask(target, x, y, 0);
 
             imp->nnf_SourceToTarget = initNNF(source, target, radius);
