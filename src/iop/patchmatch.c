@@ -273,7 +273,7 @@ int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P targ
 {
     float distance=0;
     float wsum=0;
-    float ssdmax = 9*255*255;
+    float ssdmax = 9;
     int dy, dx, band;
     int xks, yks;
     int xkt, ykt;
@@ -329,7 +329,8 @@ int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P targ
     }
 
     res = (int)(DSCALE*distance/wsum);
-    if (res < 0 || res > DSCALE) return DSCALE;
+    if (res < 0 || res > DSCALE)
+        return DSCALE;
     return res;
 }
 
@@ -357,13 +358,15 @@ MaskedImage_P copyMaskedImage(MaskedImage_P mIm)
 
 // return a downsampled image (factor 1/2)
 MaskedImage_P downsample2(MaskedImage_P source) {
-    int kernel[6] = {1,2,4,4,2,1};
+    const float kernel[6] = {1,2,4,4,2,1};
     int H, W;
     int x, y;
     int xs, ys;
     int dx, dy;
-    int xk, yk, ky, k;
-    float r=0,g=0,b=0,m=0,ksum=0;
+    int xk, yk;
+    float k, ky;
+    float r=0, g=0, b=0, m=0, ksum=0;
+
     H=source->image->height;
     W=source->image->width;
     int newW=W/2, newH=H/2;
@@ -410,19 +413,19 @@ MaskedImage_P downsample2(MaskedImage_P source) {
         }
         xs+=2;
     }
-
     return newimage;
 }
 
 // return a downsampled image (factor 1/2)
 MaskedImage_P downsample(MaskedImage_P source)
 {
-    int kernel[6] = {1,5,10,10,5,1};
+    const float kernel[6] = {1,5,10,10,5,1};
     int H, W;
     int x, y;
     int dx, dy;
-    int xk, yk, ky, k;
-    float r=0,g=0,b=0,m=0,ksum=0;
+    int xk, yk;
+    float k, ky;
+    float r=0, g=0, b=0, m=0, ksum=0;
     H=source->image->height;
     W=source->image->width;
     int newW=W/2, newH=H/2;
@@ -469,7 +472,6 @@ MaskedImage_P downsample(MaskedImage_P source)
             }
         }
     }
-
     return newimage;
 }
 
@@ -479,8 +481,10 @@ MaskedImage_P upscale(MaskedImage_P source, int newW,int newH)
     int x, y;
     int xs, ys;
     int H, W;
+
     H=source->image->height;
     W=source->image->width;
+
     MaskedImage_P newimage = initNewMaskedImage(newW, newH, source->image->nChannels);
 
     for (x=0;x<newH;x++) {
@@ -508,6 +512,7 @@ MaskedImage_P upscale(MaskedImage_P source, int newW,int newH)
     return newimage;
 }
 
+
 /**
 * Nearest-Neighbor Field (see PatchMatch algorithm)
 *  This algorithme uses a version proposed by Xavier Philippeau
@@ -524,6 +529,7 @@ NNF_P initNNF(MaskedImage_P input, MaskedImage_P output, int patchsize)
 
     return nnf;
 }
+
 
 // compute distance between two patch
 int distanceNNF(NNF_P nnf, int x,int y, int xp,int yp)
@@ -578,21 +584,22 @@ void initializeNNF(NNF_P nnf)
 {
     int y, x;
     int iter=0, maxretry=20;
+
     for (x=0;x<nnf->fieldH;++x) {
         for (y=0;y<nnf->fieldW;++y) {
-
             nnf->field[x][y][2] = distanceNNF(nnf, x,y,  nnf->field[x][y][0],nnf->field[x][y][1]);
             // if the distance is INFINITY (all pixels masked ?), try to find a better link
             iter=0;
             while ( nnf->field[x][y][2] == DSCALE && iter<maxretry) {
-                nnf->field[x][y][0] = rand() % nnf->output->image->height +1;
-                nnf->field[x][y][1] = rand() % nnf->output->image->width +1;
-                nnf->field[x][y][2] = distanceNNF(nnf, x,y,  nnf->field[x][y][0],nnf->field[x][y][1]);
+                nnf->field[x][y][0] = rand() % (nnf->output->image->height + 1);
+                nnf->field[x][y][1] = rand() % (nnf->output->image->width + 1);
+                nnf->field[x][y][2] = distanceNNF(nnf, x, y, nnf->field[x][y][0], nnf->field[x][y][1]);
                 iter++;
             }
         }
     }
 }
+
 
 // initialize field with random values
 void randomize(NNF_P nnf)
@@ -602,8 +609,8 @@ void randomize(NNF_P nnf)
     allocNNFField(nnf);
     for (i=0; i<nnf->input->image->height; ++i){
         for (j=0; j<nnf->input->image->width; ++j){
-            nnf->field[i][j][0] = rand() % nnf->output->image->height +1;
-            nnf->field[i][j][1] = rand() % nnf->output->image->width +1;
+            nnf->field[i][j][0] = rand() % (nnf->output->image->height + 1);
+            nnf->field[i][j][1] = rand() % (nnf->output->image->width + 1);
             nnf->field[i][j][2] = DSCALE;
         }
     }
@@ -658,17 +665,17 @@ void minimizeLinkNNF(NNF_P nnf, int x, int y, int dir)
         }
     }
     //Random search
-    wi=nnf->output->image->width;
+    wi=MAX(nnf->output->image->width, nnf->output->image->height);
     xpi=nnf->field[x][y][0];
     ypi=nnf->field[x][y][1];
     int r=0;
     while (wi>0) {
-        r=(rand() % (2*wi)) -wi;
+        r=(rand() % (2*wi)) - wi;
         xp = xpi + r;
-        r=(rand() % (2*wi)) -wi;
+        r=(rand() % (2*wi)) - wi;
         yp = ypi + r;
-        xp = (int)(max1(0, min1(nnf->output->image->height-1, xp )));
-        yp = (int)(max1(0, min1(nnf->output->image->width-1, yp )));
+        xp = MAX(0, MIN(nnf->output->image->height-1, xp ));
+        yp = MAX(0, MIN(nnf->output->image->width-1, yp ));
 
         dp = distanceNNF(nnf,x,y, xp,yp);
         if (dp<nnf->field[x][y][2]) {
