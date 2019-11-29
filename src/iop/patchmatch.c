@@ -348,6 +348,8 @@ MaskedImage_P copyMaskedImage(MaskedImage_P mIm)
     newimage->width = mIm->image->width;
     newimage->height = mIm->image->height;
     newimage->nChannels = mIm->image->nChannels;
+    newimage->imageData = (float*) malloc(newimage->width*newimage->height*newimage->nChannels*sizeof(float));
+
     memcpy(newimage->imageData, mIm->image->imageData, W*H*mIm->image->nChannels*sizeof(float));
 
     copy = initMaskedImage(newimage, newmask);
@@ -1023,6 +1025,7 @@ void inpaint( const float *const in,
     image.imageData = data;
     image.width = roi_in->width;
     image.height = roi_in->height;
+    image.nChannels = nChannels;
 
     for(int i=0; i<roi_in->width*roi_in->height; ++i){
         newmask[i] = (mask[i]>0.f);
