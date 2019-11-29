@@ -60,7 +60,7 @@ typedef struct dt_iop_spots_params_t dt_iop_spots_data_t;
 
 
 extern void inpaint( const float *const in,
-              float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out, float *const mask );
+              float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out, float *const mask, int ch );
 
 
 // this returns a translatable name
@@ -576,7 +576,7 @@ void _process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const
           //process_inpaint( );
           // now we do the pixel clone
 
-          inpaint( in, out, roi_in, roi_out, mask );
+          inpaint( in, out, roi_in, roi_out, mask, ch );
 
 
 //          for(int yy = roi_out->y; yy < roi_out->y+roi_out->height; yy++)

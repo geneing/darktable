@@ -1010,10 +1010,10 @@ IplImage* inpaint_impl(IplImage* input, mask_t* mask, int radius)
 
 
 void inpaint( const float *const in,
-              float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out, float *const mask )
+              float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out, float *const mask, int nChannels )
 {
     const int radius = 4.;
-    int nPix = roi_in->width*roi_in->height;
+    int nPix = roi_in->width*roi_in->height*nChannels;
     mask_t* newmask = (mask_t*) malloc(nPix*sizeof(mask_t));
 
     float* data = (float*) malloc(nPix*sizeof(float));
