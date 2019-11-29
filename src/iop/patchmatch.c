@@ -16,7 +16,20 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-/* This code is adapted from https://github.com/younesse-cv/PatchMatch */
+/**
+ * Inpaint using the PatchMatch Algorithm
+ *
+ * | PatchMatch : A Randomized Correspondence Algorithm for Structural Image Editing
+ * | by Connelly Barnes and Eli Shechtman and Adam Finkelstein and Dan B Goldman
+ * | ACM Transactions on Graphics (Proc. SIGGRAPH), vol.28, aug-2009
+ *
+ * Original author Xavier Philippeau
+ * Code adopted from: David Chatting https://github.com/davidchatting/PatchMatch
+ */
+
+/* The C version is adapted from https://github.com/younesse-cv/PatchMatch with author's permission
+   with modifications from https://github.com/KDE/krita/blob/master/plugins/tools/tool_smart_patch/kis_inpaint.cpp
+*/
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -97,13 +110,17 @@ float min1(float a, float b)
     return (a + b - fabs(a-b) ) / 2;
 }
 
+float square(float x)
+{
+    return x*x;
+}
 
 // Variables globales
 float* G_globalSimilarity;
 int G_initSim;
 
 
-void initSimilarity()
+void initSimilarity0()
 {
     int i, j, k, length;
     float base[11] = {1.0, 0.99, 0.96, 0.83, 0.38, 0.11, 0.02, 0.005, 0.0006, 0.0001, 0 };
@@ -123,17 +140,22 @@ void initSimilarity()
     G_initSim = 1;
 }
 
-void initSimilarity2()
+void initSimilarity()
 {
     int i, length;
-    float t_halfmax=0.04, t, coef;
+    float s_zero = 0.999;
+    float t_halfmax = 0.10;
+    float t;
+    float x  = (s_zero - 0.5f) * 2.f;
+    float invtanh = 0.5f * log((1.f + x) / (1.f - x));
+    float coef = invtanh / t_halfmax;
+
     length = (DSCALE+1);
     if (!G_initSim){
         G_globalSimilarity = (float *) calloc(length, sizeof(float));
-        coef = -log(0.5)/pow(t_halfmax,2);
         for (i=0;i<length;i++) {
             t = (float)i/length;
-            G_globalSimilarity[i] = exp(-(t*t)*coef);
+            G_globalSimilarity[i] = 0.5f - 0.5f * tanh(coef * (t - t_halfmax));
         }
     }
     G_initSim = 1;
@@ -195,8 +217,7 @@ void freeMaskedImage(MaskedImage_P mIm)
     }
 }
 
-
-int getSampleMaskedImage(MaskedImage_P mIm, int x, int y, int band)
+float getSampleMaskedImage(MaskedImage_P mIm, int x, int y, int band)
 {
     float* data;
     int channels=mIm->image->nChannels;
@@ -258,7 +279,7 @@ int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P targ
     int xkt, ykt;
     float ssd;
     long res;
-    int s_value, t_value, s_gx, t_gx, s_gy, t_gy;
+    float s_value, t_value, s_gx, t_gx, s_gy, t_gy;
 
     // for each pixel in the source patch
     for ( dy=-S ; dy<=S ; ++dy ) {
@@ -290,16 +311,16 @@ int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P targ
                 t_value = getSampleMaskedImage(source, xkt, ykt, band);
 
                 // pixel horizontal gradients (Gx)
-                s_gx = 128+(getSampleMaskedImage(source, xks+1, yks, band) - getSampleMaskedImage(source, xks-1, yks, band))/2;
-                t_gx = 128+(getSampleMaskedImage(target, xkt+1, ykt, band) - getSampleMaskedImage(target, xkt-1, ykt, band))/2;
+                s_gx = (getSampleMaskedImage(source, xks+1, yks, band) - getSampleMaskedImage(source, xks-1, yks, band))/2;
+                t_gx = (getSampleMaskedImage(target, xkt+1, ykt, band) - getSampleMaskedImage(target, xkt-1, ykt, band))/2;
 
                 // pixel vertical gradients (Gy)
-                s_gy = 128+(getSampleMaskedImage(source, xks, yks+1, band) - getSampleMaskedImage(source, xks, yks-1, band))/2;
-                t_gy = 128+(getSampleMaskedImage(target, xkt, ykt+1, band) - getSampleMaskedImage(target, xkt, ykt-1, band))/2;
+                s_gy = (getSampleMaskedImage(source, xks, yks+1, band) - getSampleMaskedImage(source, xks, yks-1, band))/2;
+                t_gy = (getSampleMaskedImage(target, xkt, ykt+1, band) - getSampleMaskedImage(target, xkt, ykt-1, band))/2;
 
-                ssd += pow((float)s_value-t_value , 2); // distance between values in [0,255^2]
-                ssd += pow((float)s_gx-t_gx , 2); // distance between Gx in [0,255^2]
-                ssd += pow((float)s_gy-t_gy , 2); // distance between Gy in [0,255^2]
+                ssd += square((float)s_value-t_value); // distance between values in [0,1]
+                ssd += square((float)s_gx-t_gx); // distance between Gx in [0,1]
+                ssd += square((float)s_gy-t_gy); // distance between Gy in [0,1]
             }
 
             // add pixel distance to global patch distance
@@ -342,7 +363,7 @@ MaskedImage_P downsample2(MaskedImage_P source) {
     int xs, ys;
     int dx, dy;
     int xk, yk, ky, k;
-    int r=0,g=0,b=0,m=0,ksum=0;
+    float r=0,g=0,b=0,m=0,ksum=0;
     H=source->image->height;
     W=source->image->width;
     int newW=W/2, newH=H/2;
@@ -401,7 +422,7 @@ MaskedImage_P downsample(MaskedImage_P source)
     int x, y;
     int dx, dy;
     int xk, yk, ky, k;
-    int r=0,g=0,b=0,m=0,ksum=0;
+    float r=0,g=0,b=0,m=0,ksum=0;
     H=source->image->height;
     W=source->image->width;
     int newW=W/2, newH=H/2;
