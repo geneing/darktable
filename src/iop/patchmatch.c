@@ -217,22 +217,18 @@ void freeMaskedImage(MaskedImage_P mIm)
     }
 }
 
-float getSampleMaskedImage(MaskedImage_P mIm, int x, int y, int band)
+float getSampleMaskedImage(const MaskedImage_P mIm, int x, int y, int band)
 {
-    float* data;
     int channels=mIm->image->nChannels;
     int step = mIm->image->width * channels;
-    data = (float *)mIm->image->imageData;
-    return data[x*step+y*channels+band];
+    return mIm->image->imageData[x*step+y*channels+band];
 }
 
 void setSampleMaskedImage(MaskedImage_P mIm, int x, int y, int band, float value)
 {
-    float* data;
     int channels=mIm->image->nChannels;
     int step = mIm->image->width * channels;
-    data = (float *)mIm->image->imageData;
-    data[x*step+y*channels+band] = value;
+    mIm->image->imageData[x*step+y*channels+band] = value;
 }
 
 int isMasked(MaskedImage_P mIm, int x, int y)
@@ -271,13 +267,13 @@ int constainsMasked(MaskedImage_P mIm, int x, int y, int S)
 // distance between two patches in two images
 int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P target, int xt, int yt, int S)
 {
-    float distance=0;
-    float wsum=0;
+    float distance=0.f;
+    int wsum=0;
     float ssdmax = 9;
     int dy, dx, band;
     int xks, yks;
     int xkt, ykt;
-    float ssd;
+    float ssd = 0;
     long res;
     float s_value, t_value, s_gx, t_gx, s_gy, t_gy;
 
@@ -328,7 +324,7 @@ int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P targ
         }
     }
 
-    res = (int)(DSCALE*distance/wsum);
+    res = (wsum>0) ? (int)(DSCALE*distance/wsum) : DSCALE;
     if (res < 0 || res > DSCALE)
         return DSCALE;
     return res;
@@ -527,6 +523,8 @@ NNF_P initNNF(MaskedImage_P input, MaskedImage_P output, int patchsize)
     nnf->input = input;
     nnf->output= output;
     nnf->S = patchsize;
+    nnf->fieldH = 0;
+    nnf->fieldW = 0;
     nnf->field=NULL;
 
     return nnf;
@@ -534,7 +532,7 @@ NNF_P initNNF(MaskedImage_P input, MaskedImage_P output, int patchsize)
 
 
 // compute distance between two patch
-int distanceNNF(NNF_P nnf, int x,int y, int xp,int yp)
+int distanceNNF(NNF_P nnf, int x,int y, int xp, int yp)
 {
     return distanceMaskedImage(nnf->input,x,y, nnf->output,xp,yp, nnf->S);
 }
@@ -546,7 +544,7 @@ void allocNNFField(NNF_P nnf)
         nnf->fieldH=nnf->input->image->height;
         nnf->fieldW=nnf->input->image->width;
         nnf->field = (int ***) malloc(sizeof(int**)*nnf->fieldH);
-
+        nnf->S = 4;
         for ( i=0 ; i < nnf->fieldH ; i++ ) {
             nnf->field[i] = (int **) malloc(sizeof(int*)*nnf->fieldW);
             for (j=0 ; j<nnf->fieldW ; j++ ) {
@@ -585,7 +583,8 @@ void freeNNF(NNF_P nnf)
 void initializeNNF(NNF_P nnf)
 {
     int y, x;
-    int iter=0, maxretry=20;
+    int iter=0;
+    const int maxretry=20;
 
     for (x=0;x<nnf->fieldH;++x) {
         for (y=0;y<nnf->fieldW;++y) {
@@ -627,6 +626,8 @@ void initializeNNFFromOtherNNF(NNF_P nnf, NNF_P otherNnf)
     allocNNFField(nnf);
     fy = nnf->fieldW/otherNnf->fieldW;
     fx = nnf->fieldH/otherNnf->fieldH;
+    nnf->S = otherNnf->S;
+
     for (x=0;x<nnf->fieldH;++x) {
         for (y=0;y<nnf->fieldW;++y) {
             xlow = (int)(min1(x/fx, otherNnf->input->image->height-1));
@@ -946,7 +947,7 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
 
 IplImage* inpaint_impl(IplImage* input, mask_t* mask, int radius)
 {
-    Inpaint_P imp = (Inpaint_P) malloc(sizeof(Inpaint_T));
+    Inpaint_P imp = initInpaint();
     NNF_P new_nnf, new_nnf_rev;
 
     // initial image
