@@ -789,53 +789,69 @@ void weightedCopy(MaskedImage_P src, int xs, int ys, float*** vote, int xd,int y
 
 
 // Expectation Step : vote for best estimations of each pixel
-void ExpectationStep(NNF_P nnf, int sourceToTarget, float*** vote, MaskedImage_P source, int upscale)
+void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage_P target, int upscale)
 {
-    int y, x, H, W, Ho, Wo, xp, yp, dp, dy, dx;
-    int xs,ys,xt,yt;
+    int y, x, H, W, dp, dy, dx;
+    int xs, ys;
     int*** field = nnf->field;
     int R = nnf->S; /////////////int R = nnf->PatchSize;
     float w;
 
-    H = nnf->input->image->height;
-    W = nnf->input->image->width;
-    Ho = nnf->output->image->height;
-    Wo = nnf->output->image->width;
-    for ( x=0 ; x<H ; ++x) {
-        for ( y=0 ; y<W; ++y) {
-            // x,y = center pixel of patch in input
+    H = nnf->fieldH;
+    W = nnf->fieldW;
+    int H_target = target->image->height;
+    int W_target = target->image->width;
+    int H_source = source->image->height;
+    int W_source = source->image->width;
 
-            // xp,yp = center pixel of best corresponding patch in output
-            xp=field[x][y][0];
-            yp=field[x][y][1];
-            dp=field[x][y][2];
+    for ( x=0 ; x<H_target ; ++x) {
+        for ( y=0 ; y<W_target; ++y) {
 
-            // similarity measure between the two patches
-            w = G_globalSimilarity[dp];
+            if( !constainsMasked(source, x, y, R ) ){ //why R+4?
+                vote[x][y][0] = getSampleMaskedImage(source, x, y, 0);
+                vote[x][y][1] = getSampleMaskedImage(source, x, y, 1);
+                vote[x][y][2] = getSampleMaskedImage(source, x, y, 2);
+                vote[x][y][3] = 1.f;
+            }
+            else{
+                // vote for each pixel inside the input patch
+                for ( dy=-R ; dy<=R ; ++dy) {
+                    for ( dx=-R ; dx<=R; ++dx) {
+                        // xpt,ypt = center pixel of the target patch
+                        int xpt = x + dx;
+                        int ypt = y + dy;
+                        int xst, yst;
 
-            // vote for each pixel inside the input patch
-            for ( dy=-R ; dy<=R ; ++dy) {
-                for ( dx=-R ; dx<=R; ++dx) {
+                        if (!upscale) {
+                            if (xpt < 0 || xpt >= H || ypt < 0 || ypt >= W)
+                                continue;
 
-                    // get corresponding pixel in output patch
-                    if (sourceToTarget)
-                    { xs=x+dx; ys=y+dy;	xt=xp+dx; yt=yp+dy;}
-                    else
-                    { xs=xp+dx; ys=yp+dy; xt=x+dx; yt=y+dy; }
+                            xst=field[x][y][0];
+                            yst=field[x][y][1];
+                            dp=field[x][y][2];
+                            w = G_globalSimilarity[dp];
+                        }
+                        else{
+                            if (xpt < 0 || (xpt / 2) >= W || ypt < 0 || (ypt / 2) >= H)
+                                continue;
+                            xst = 2 * field[xpt/2][ypt/2][0] + (xpt % 2);
+                            yst = 2 * field[xpt/2][ypt/2][1] + (ypt % 2);
+                            dp = field[xpt/2][ypt/2][2];
 
-                    if (xs<0 || xs>=H) continue;
-                    if (ys<0 || ys>=W) continue;
-                    if (xt<0 || xt>=Ho) continue;
-                    if (yt<0 || yt>=Wo) continue;
+                            // similarity measure between the two patches
+                            w = G_globalSimilarity[dp];
+                        }
 
-                    // add vote for the value
-                    if (upscale) {
-                        weightedCopy(source, 2*xs,   2*ys,   vote, 2*xt,   2*yt,   w);
-                        weightedCopy(source, 2*xs+1, 2*ys,   vote, 2*xt+1, 2*yt,   w);
-                        weightedCopy(source, 2*xs,   2*ys+1, vote, 2*xt,   2*yt+1, w);
-                        weightedCopy(source, 2*xs+1, 2*ys+1, vote, 2*xt+1, 2*yt+1, w);
-                    } else {
-                        weightedCopy(source, xs, ys, vote, xt, yt, w);
+                        xs = xst - dx;
+                        ys = yst - dy;
+
+                        if (xs < 0 || xs >= H_source || ys < 0 || ys >= W_source)
+                            continue;
+
+                        if (isMasked(source, xs, ys))
+                            continue;
+
+                        weightedCopy(source, xs, ys, vote, xpt, ypt, w);
                     }
                 }
             }
@@ -850,13 +866,13 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
     int emloop, H, W;
     float*** vote;
 
-    int iterEM = 1+2*level;
-    int iterNNF = MIN(7,1+level);
+    int iterEM = MIN(2*level, 4);
+    int iterNNF = MIN(5, 1+level);
 
     int upscaled;
     MaskedImage_P newsource;
-    MaskedImage_P source = imp->nnf_SourceToTarget->input;
-    MaskedImage_P target = imp->nnf_SourceToTarget->output;
+    MaskedImage_P source = imp->nnf_TargetToSource->input;
+    MaskedImage_P target = imp->nnf_TargetToSource->output;
     MaskedImage_P newtarget = NULL;
 
     //printf("EM loop (em=%d,nnf=%d) : ", iterEM, iterNNF);
@@ -866,22 +882,10 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
         //printf(" %d", 1+iterEM-emloop);
         // set the new target as current target
         if (newtarget!=NULL) {
-            imp->nnf_SourceToTarget->output = newtarget;
             imp->nnf_TargetToSource->input = newtarget;
             target = newtarget;
             newtarget = NULL;
         }
-        // -- add constraint to the NNF
-        H = source->image->height;
-        W = source->image->width;
-        // we force the link between unmasked patch in source/target
-        for (int x=0 ; x<H; ++x)
-            for (int y=0 ; y<W ; ++y)
-                if (!constainsMasked(source, x, y, imp->radius)) {
-                    imp->nnf_SourceToTarget->field[x][y][0] = x;
-                    imp->nnf_SourceToTarget->field[x][y][1] = y;
-                    imp->nnf_SourceToTarget->field[x][y][2] = 0;
-                }
 
         H = target->image->height;
         W = target->image->width;
@@ -893,18 +897,16 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
                     imp->nnf_TargetToSource->field[x][y][2] = 0;
                 }
         // -- minimize the NNF
-        minimizeNNF(imp->nnf_SourceToTarget, iterNNF);
         minimizeNNF(imp->nnf_TargetToSource, iterNNF);
 
         // -- Now we rebuild the target using best patches from source
-
         upscaled = 0;
 
         // Instead of upsizing the final target, we build the last target from the next level source image
         // So the final target is less blurry (see "Space-Time Video Completion" - page 5)
         if (level>=1 && (emloop==iterEM)) {
             newsource = imp->pyramid[level-1];
-            newtarget = upscale(target, newsource->image->width,newsource->image->height);
+            newtarget = upscale(target, newsource->image->width, newsource->image->height);
             upscaled = 1;
         } else {
             newsource = imp->pyramid[level];
@@ -924,8 +926,7 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
             }
         }
 
-        ExpectationStep(imp->nnf_SourceToTarget, 1, vote, newsource, upscaled);
-        ExpectationStep(imp->nnf_TargetToSource, 0, vote, newsource, upscaled);
+        ExpectationStep(imp->nnf_TargetToSource, vote, newsource, newtarget, upscaled);
 
         // --- MAXIMIZATION STEP ---
 
