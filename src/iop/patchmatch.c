@@ -902,7 +902,7 @@ void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage
 
             // vote for each pixel inside the input patch
 
-            if( !containsMasked(source, x, y, R+4) ){ //why R+4?
+            if( !containsMasked(source, x, y, R+16) ){ //why R+4?
                 vote[x][y][0] = getSampleMaskedImage(source, x, y, 0);
                 vote[x][y][1] = getSampleMaskedImage(source, x, y, 1);
                 vote[x][y][2] = getSampleMaskedImage(source, x, y, 2);
@@ -958,8 +958,8 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
     int emloop, H, W;
     float*** vote;
 
-    int iterEM = MIN(2*level, 4);
-    int iterNNF = MIN(5, 1+level);
+    int iterEM = MIN(2*level+2, 4);
+    int iterNNF = MIN(7, 1+level);
 
     int upscaled;
     MaskedImage_P newsource = imp->pyramid[level-1];
@@ -1119,7 +1119,7 @@ MaskedImage_P inpaint_impl(IplImage* input, mask_t* mask, int radius)
 void inpaint( const float *const in,
               float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out, float *const mask, int nChannels )
 {
-    const int radius = 4.;
+    const int radius = 2.;
     int nPix = roi_in->width*roi_in->height*nChannels;
     mask_t* newmask = (mask_t*) malloc(nPix*sizeof(mask_t));
 
