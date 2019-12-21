@@ -236,7 +236,7 @@ int isMasked(MaskedImage_P mIm, int x, int y)
 {
 //    if (mIm==NULL || mIm->mask==NULL)
 //        return 0;
-    return mIm->mask[x * mIm->image->width + y];
+    return (mIm->mask[x * mIm->image->width + y]==1);
 }
 
 void setMask(MaskedImage_P mIm, int x, int y, float value) {
@@ -288,21 +288,25 @@ int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P targ
             yks = ys+dy;
             xkt = xt+dx;
             ykt = yt+dy;
-            wsum++;
 
-            if ( xks<1 || xks>=source->image->height-1 ) {distance++; continue;}
-            if ( yks<1 || yks>=source->image->width-1 ) {distance++; continue;}
+            if ( xks<1 || xks>=source->image->height-1 ) {distance+=ssdmax; continue;}
+            if ( yks<1 || yks>=source->image->width-1 ) {distance+=ssdmax; continue;}
 
             // cannot use masked pixels as a valid source of information
-            if (isMasked(source, xks, yks)) {distance++; continue;}
+            if (isMasked(source, xks, yks)) {
+                distance+=ssdmax;
+                continue;}
 
             // corresponding pixel in the target patch
-            if (xkt<1 || xkt>=target->image->height-1) {distance++; continue;}
-            if (ykt<1 || ykt>=target->image->width-1) {distance++; continue;}
+            if (xkt<1 || xkt>=target->image->height-1) {distance+=ssdmax; continue;}
+            if (ykt<1 || ykt>=target->image->width-1) {distance+=ssdmax; continue;}
 
             // cannot use masked pixels as a valid source of information
-            if (isMasked(target, xkt, ykt)) {distance++; continue;}
+            if (isMasked(target, xkt, ykt)) {
+                distance+=ssdmax;
+                continue;}
 
+            wsum++;
             ssd=0;
             for (band=0; band<3; ++band) {
                 // pixel values
@@ -327,9 +331,7 @@ int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P targ
         }
     }
 
-    res = (wsum>0) ? (int)(DSCALE*distance/wsum) : DSCALE;
-    if (res < 0 || res > DSCALE)
-        return DSCALE;
+    res = (wsum>0) ? (int)(DSCALE*distance/wsum) : 100*DSCALE;
     return res;
 }
 
@@ -417,6 +419,12 @@ MaskedImage_P downsample(MaskedImage_P source) {
     return newimage;
 }
 
+void clearMask( MaskedImage_P img )
+{
+    for(int i=0; i< img->image->width*img->image->height; ++i)
+        img->mask[i]=0;
+}
+
 // return a downsampled image (factor 1/2)
 MaskedImage_P downsample2(MaskedImage_P source)
 {
@@ -496,7 +504,7 @@ MaskedImage_P upscale(MaskedImage_P source, int newW,int newH)
             xs = (x*H)/newH;
 
             // copy to new image
-            if (source->mask[xs*W+ys]) {
+            if (source->mask[xs*W+ys]==1) {
                 setSampleMaskedImage(newimage, x, y, 0, 0);
                 setSampleMaskedImage(newimage, x, y, 1, 0);
                 setSampleMaskedImage(newimage, x, y, 2, 0);
@@ -514,11 +522,51 @@ MaskedImage_P upscale(MaskedImage_P source, int newW,int newH)
 }
 
 
-void dumpField( NNF_P nnf )
+void dumpMaskedImage( MaskedImage_P img, int level, int emloop, int tag )
 {
-    FILE *f0 = g_fopen("x.csv","w");
-    FILE *f1 = g_fopen("y.csv","w");
-    FILE *f2 = g_fopen("d.csv","w");
+    char buf[256];
+
+    sprintf(buf,"img_%d_%d_%d.csv", level, emloop, tag);
+    FILE *fimg = g_fopen(buf, "w");
+
+    int H = img->image->height;
+    int W = img->image->width;
+    int c = img->image->nChannels;
+
+    for(int x=0; x<H; ++x){
+        for(int y=0; y<W; ++y){
+            float sum = 0.f;
+            for(int k=0; k<c; k++)
+                sum += img->image->imageData[(x*W+y)*c+k];
+            fprintf(fimg, "%g, ", sum );
+        }
+        fprintf(fimg, "\n");
+    }
+
+
+    sprintf(buf,"mask_%d_%d_%d.csv", level, emloop, tag);
+    FILE *fmask = g_fopen(buf, "w");
+    for(int x=0; x<H; ++x){
+        for(int y=0; y<W; ++y){
+            fprintf(fmask, "%d, ", img->mask[x*W+y]);
+        }
+        fprintf(fmask, "\n");
+    }
+    fclose(fmask);
+    fclose(fimg);
+}
+
+
+void dumpField( NNF_P nnf, int level, int emloop )
+{
+    char buf[256];
+
+    sprintf(buf,"x_%d_%d.csv", level, emloop);
+    FILE *f0 = g_fopen(buf, "w");
+    sprintf(buf,"y_%d_%d.csv", level, emloop);
+    FILE *f1 = g_fopen(buf, "w");
+    sprintf(buf,"d_%d_%d.csv", level, emloop);
+    FILE *f2 = g_fopen(buf, "w");
 
     for(int x=0; x<nnf->fieldH; ++x){
         for(int y=0; y<nnf->fieldW; ++y){
@@ -535,11 +583,15 @@ void dumpField( NNF_P nnf )
     fclose(f0);
 }
 
-void dumpVote(float*** vote, MaskedImage_P img)
+void dumpVote(float*** vote, MaskedImage_P img, int level, int emloop)
 {
-    FILE *f0 = g_fopen("r.csv","w");
-    FILE *f1 = g_fopen("g.csv","w");
-    FILE *f2 = g_fopen("w.csv","w");
+    char buf[256];
+    sprintf(buf,"r_%d_%d.csv", level, emloop);
+    FILE *f0 = g_fopen(buf,"w");
+    sprintf(buf,"g_%d_%d.csv", level, emloop);
+    FILE *f1 = g_fopen(buf,"w");
+    sprintf(buf,"w_%d_%d.csv", level, emloop);
+    FILE *f2 = g_fopen(buf,"w");
 
     for( int x=0 ; x<img->image->height ; ++x){
         for( int y=0 ; y<img->image->width ; ++y){
@@ -568,8 +620,8 @@ NNF_P initNNF(MaskedImage_P input, MaskedImage_P output, int patchsize)
     nnf->input = input;
     nnf->output= output;
     nnf->S = patchsize;
-    nnf->fieldH = 0;
-    nnf->fieldW = 0;
+    nnf->fieldH = nnf->input->image->height;
+    nnf->fieldW = nnf->input->image->width;
     nnf->field=NULL;
 
     return nnf;
@@ -636,9 +688,9 @@ void initializeNNF(NNF_P nnf)
             nnf->field[x][y][2] = distanceNNF(nnf, x,y,  nnf->field[x][y][0],nnf->field[x][y][1]);
             // if the distance is INFINITY (all pixels masked ?), try to find a better link
             iter=0;
-            while ( nnf->field[x][y][2] == DSCALE && iter<maxretry) {
-                nnf->field[x][y][0] = rand() % (nnf->output->image->height + 1);
-                nnf->field[x][y][1] = rand() % (nnf->output->image->width + 1);
+            while ( nnf->field[x][y][2] == 100*DSCALE && iter<maxretry) {
+                nnf->field[x][y][0] = rand() % (nnf->output->image->height);
+                nnf->field[x][y][1] = rand() % (nnf->output->image->width);
                 nnf->field[x][y][2] = distanceNNF(nnf, x, y, nnf->field[x][y][0], nnf->field[x][y][1]);
                 iter++;
             }
@@ -655,8 +707,8 @@ void randomize(NNF_P nnf)
     allocNNFField(nnf);
     for (i=0; i<nnf->input->image->height; ++i){
         for (j=0; j<nnf->input->image->width; ++j){
-            nnf->field[i][j][0] = rand() % (nnf->output->image->height + 1);
-            nnf->field[i][j][1] = rand() % (nnf->output->image->width + 1);
+            nnf->field[i][j][0] = rand() % (nnf->output->image->height);
+            nnf->field[i][j][1] = rand() % (nnf->output->image->width);
             nnf->field[i][j][2] = DSCALE;
         }
     }
@@ -691,11 +743,11 @@ void minimizeLinkNNF(NNF_P nnf, int x, int y, int dir)
 {
     int xp,yp,dp,wi, xpi, ypi;
     //Propagation Up/Down
-    if (x-dir>0 && x-dir<nnf->input->image->height) {
+    if (x-dir>=0 && x-dir<nnf->input->image->height) {
         xp = nnf->field[x-dir][y][0]+dir;
         yp = nnf->field[x-dir][y][1];
         dp = distanceNNF(nnf,x,y, xp,yp);
-        if (dp < nnf->field[x][y][2]) {
+        if (dp < nnf->field[x][y][2] && xp<nnf->input->image->height && yp<nnf->input->image->width ) {
             nnf->field[x][y][0] = xp;
             nnf->field[x][y][1] = yp;
             nnf->field[x][y][2] = dp;
@@ -703,11 +755,11 @@ void minimizeLinkNNF(NNF_P nnf, int x, int y, int dir)
     }
 
     //Propagation Left/Right
-    if (y-dir>0 && y-dir<nnf->input->image->width) {
+    if (y-dir>=0 && y-dir<nnf->input->image->width) {
         xp = nnf->field[x][y-dir][0];
         yp = nnf->field[x][y-dir][1]+dir;
         dp = distanceNNF(nnf,x,y, xp,yp);
-        if (dp<nnf->field[x][y][2]) {
+        if (dp<nnf->field[x][y][2] && xp<nnf->output->image->height && yp<nnf->output->image->width ) {
             nnf->field[x][y][0] = xp;
             nnf->field[x][y][1] = yp;
             nnf->field[x][y][2] = dp;
@@ -791,7 +843,7 @@ void addEltInpaintingPyramid(Inpaint_P imp, MaskedImage_P elt)
         imp->pyramid = (MaskedImage_P*)realloc(imp->pyramid, sizeof(MaskedImage_P)*imp->nbEltMaxPyramid);
     }
 
-    imp->pyramid[imp->nbEltPyramid] = elt;
+    imp->pyramid[imp->nbEltPyramid] = copyMaskedImage(elt);
     imp->nbEltPyramid++;
 }
 
@@ -820,8 +872,8 @@ void MaximizationStep(MaskedImage_P target, float*** vote)
 
 void weightedCopy(MaskedImage_P src, int xs, int ys, float*** vote, int xd,int yd, float w)
 {
-//    if (isMasked(src, xs, ys))
-//        return;
+    if (isMasked(src, xs, ys))
+        return;
 
     vote[xd][yd][0] += w*getSampleMaskedImage(src, xs, ys, 0);
     vote[xd][yd][1] += w*getSampleMaskedImage(src, xs, ys, 1);
@@ -833,14 +885,13 @@ void weightedCopy(MaskedImage_P src, int xs, int ys, float*** vote, int xd,int y
 // Expectation Step : vote for best estimations of each pixel
 void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage_P target, int upscale)
 {
-    int y, x, H, W, dp, dy, dx;
-    int xs, ys;
+    int y, x, /*H, W,*/ dy, dx;
     int*** field = nnf->field;
     int R = nnf->S; /////////////int R = nnf->PatchSize;
     float w;
 
-    H = nnf->fieldH;
-    W = nnf->fieldW;
+    int H = nnf->fieldH;
+    int W = nnf->fieldW;
     int H_target = target->image->height;
     int W_target = target->image->width;
     int H_source = source->image->height;
@@ -848,14 +899,8 @@ void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage
 
     for ( x=0 ; x<H_target ; ++x) {
         for ( y=0 ; y<W_target; ++y) {
-            // x,y = center pixel of patch in input
-            // xp,yp = center pixel of best corresponding patch in output
-//            int xp=field[x][y][0];
-//            int yp=field[x][y][1];
-//            dp=field[x][y][2];
 
-            // similarity measure between the two patches
-//            w = G_globalSimilarity[dp];
+            // vote for each pixel inside the input patch
 
             if( !containsMasked(source, x, y, R+4) ){ //why R+4?
                 vote[x][y][0] = getSampleMaskedImage(source, x, y, 0);
@@ -863,42 +908,42 @@ void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage
                 vote[x][y][2] = getSampleMaskedImage(source, x, y, 2);
                 vote[x][y][3] = 1.f;
             }
-            else{
+            else {
                 // vote for each pixel inside the input patch
                 for ( dy=-R ; dy<=R ; ++dy) {
                     for ( dx=-R ; dx<=R; ++dx) {
+
                         // xpt,ypt = center pixel of the target patch
                         int xpt = x + dx;
                         int ypt = y + dy;
+
                         int xst, yst;
 
-                        if (!upscale) {
-                            if (xpt < 0 || xpt >= H || ypt < 0 || ypt >= W)
-                                continue;
+                        // add vote for the value
+                        if (upscale) {
+                            if (xpt<0 || (xpt/2)>=H) continue;
+                            if (ypt<0 || (ypt/2)>=W) continue;
+                            xst = 2 * field[xpt / 2][ypt / 2][0] + (xpt % 2);
+                            yst = 2 * field[xpt / 2][ypt / 2][1] + (ypt % 2);
 
-                            xst=field[xpt][ypt][0];
-                            yst=field[xpt][ypt][1];
-                            dp=field[xpt][ypt][2];
+                            int dp = field[xpt / 2][ypt / 2][2];
+                            // similarity measure between the two patches
                             w = G_globalSimilarity[dp];
-                        }
-                        else{
-                            if (xpt < 0 || (xpt / 2) >= H || ypt < 0 || (ypt / 2) >= W)
-                                continue;
-                            xst = 2 * field[xpt/2][ypt/2][0] + (xpt % 2);
-                            yst = 2 * field[xpt/2][ypt/2][1] + (ypt % 2);
-                            dp = field[xpt/2][ypt/2][2];
-
+                        } else {
+                            if (xpt<0 || xpt>=H) continue;
+                            if (ypt<0 || ypt>=W) continue;
+                            xst = field[xpt][ypt][0];
+                            yst = field[xpt][ypt][1];
+                            int dp = field[xpt][ypt][2];
                             // similarity measure between the two patches
                             w = G_globalSimilarity[dp];
                         }
-
-                        xs = xst - dx;
-                        ys = yst - dy;
+                        int xs = xst - dx;
+                        int ys = yst - dy;
 
                         if (xs < 0 || xs >= H_source || ys < 0 || ys >= W_source)
                             continue;
-
-                        weightedCopy(source, xs, ys, vote, xpt, ypt, w);
+                        weightedCopy(source, xs, ys, vote, x, y, w);
                     }
                 }
             }
@@ -917,9 +962,9 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
     int iterNNF = MIN(5, 1+level);
 
     int upscaled;
-    MaskedImage_P newsource;
-    MaskedImage_P source = imp->nnf_TargetToSource->input;
-    MaskedImage_P target = imp->nnf_TargetToSource->output;
+    MaskedImage_P newsource = imp->pyramid[level-1];
+    MaskedImage_P source = imp->nnf_TargetToSource->output;
+    MaskedImage_P target = imp->nnf_TargetToSource->input;
     MaskedImage_P newtarget = NULL;
 
     //printf("EM loop (em=%d,nnf=%d) : ", iterEM, iterNNF);
@@ -936,6 +981,9 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
 
         H = target->image->height;
         W = target->image->width;
+        dumpMaskedImage(target, level, emloop, 0);
+        dumpMaskedImage(source, level, emloop, 1);
+
         for (int x=0 ; x<H ; ++x){
             for (int y=0 ; y<W ; ++y){
                 if (!containsMasked(source, x, y, imp->radius)) {
@@ -943,17 +991,15 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
                     imp->nnf_TargetToSource->field[x][y][1] = y;
                     imp->nnf_TargetToSource->field[x][y][2] = 0;
                 }
-                else{
-                    imp->nnf_TargetToSource->field[x][y][2] = 10*DSCALE;
-                }
             }
         }
 
         // -- minimize the NNF
+        dumpField(imp->nnf_TargetToSource, level, emloop);
         minimizeNNF(imp->nnf_TargetToSource, iterNNF);
 
-        if( level==1 && emloop==2)
-            dumpField(imp->nnf_TargetToSource);
+//        if( level==1 && emloop==2)
+//            dumpField(imp->nnf_TargetToSource);
 
 
         // -- Now we rebuild the target using best patches from source
@@ -965,12 +1011,13 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
             newsource = imp->pyramid[level-1];
             newtarget = upscale(target, newsource->image->width, newsource->image->height);
             upscaled = 1;
-
         } else {
             newsource = imp->pyramid[level];
-            newtarget = copyMaskedImage(target);
+            newtarget = target; //copyMaskedImage(target);
             upscaled = 0;
         }
+        dumpMaskedImage(newsource, level, emloop, 2);
+        dumpMaskedImage(newtarget, level, emloop, 3);
 
         // --- EXPECTATION STEP ---
 
@@ -985,13 +1032,14 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
         }
 
         ExpectationStep(imp->nnf_TargetToSource, vote, newsource, newtarget, upscaled);
-        if( level==1 && emloop==2)
-            dumpVote(vote, newtarget);
 
         // --- MAXIMIZATION STEP ---
 
         // compile votes and update pixel values
+        dumpVote(vote, newtarget, level, emloop);
         MaximizationStep(newtarget, vote);
+        dumpMaskedImage(newtarget, level, emloop, 4);
+
 
         for (int i=0;i<newtarget->image->height;i++) {
             for (int j=0;j<newtarget->image->width;j++)
@@ -1028,15 +1076,18 @@ MaskedImage_P inpaint_impl(IplImage* input, mask_t* mask, int radius)
 
     // working copies
     MaskedImage_P source = imp->initial;
-    MaskedImage_P target = NULL;
 
     // build pyramid of downscaled images
-    addEltInpaintingPyramid(imp, source);
-    while (/*countMasked(source) > 0 && */source->image->width>radius && source->image->height>radius ) {
+    addEltInpaintingPyramid(imp, imp->initial);
+
+    while ( countMasked(source) > 0 && source->image->width>radius && source->image->height>radius ) {
         source = downsample(source);
         addEltInpaintingPyramid(imp, source);
     }
     int maxlevel=imp->nbEltPyramid;
+
+    MaskedImage_P target = copyMaskedImage(source);
+    clearMask(target);
 
     // for each level of the pyramid
     for (int level=maxlevel-1 ; level>0 ; level--) {
@@ -1047,7 +1098,7 @@ MaskedImage_P inpaint_impl(IplImage* input, mask_t* mask, int radius)
         if (level==maxlevel-1) {
             // at first, we use the same image for target and source
             // and use random data as initial guess
-            target = copyMaskedImage(source);
+
             imp->nnf_TargetToSource = initNNF(target, source, radius);
             randomize(imp->nnf_TargetToSource);
         } else {
@@ -1064,8 +1115,6 @@ MaskedImage_P inpaint_impl(IplImage* input, mask_t* mask, int radius)
     free(imp);
     return target;
 }
-
-
 
 void inpaint( const float *const in,
               float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out, float *const mask, int nChannels )
