@@ -38,6 +38,7 @@
 #include "develop/imageop.h"
 #include <math.h>
 #include <stdio.h>
+#include <time.h>
 
 // the maximum value returned by MaskedImage.distance()
 #define DSCALE 65535
@@ -58,8 +59,7 @@ typedef struct{
     mask_t* mask;
     IplImage* image;
 
-    // array for converting distance to similarity
-    float * similarity;
+    int mask_x[2], mask_y[2];
 
     int isNew;
 } MaskedImage_T;
@@ -115,10 +115,10 @@ float square(float x)
     return x*x;
 }
 
-// Variables globales
-float* G_globalSimilarity;
-int G_initSim;
-
+static float* G_globalSimilarity;
+static int G_initSim;
+void updateMaskBounds( MaskedImage_P im );
+int isMasked(MaskedImage_P mIm, int x, int y);
 
 void initSimilarity0()
 {
@@ -161,16 +161,43 @@ void initSimilarity()
     G_initSim = 1;
 }
 
+//compute mask bounding box to speedup containsMasked computation
+void updateMaskBounds( MaskedImage_P im )
+{
+    int numMasked = 0;
+
+    im->mask_x[0] = im->image->height;
+    im->mask_x[1] = 0;
+    im->mask_y[0] = im->image->width;
+    im->mask_y[1] = 0;
+
+    for(int x=0; x<im->image->height; ++x){
+        for(int y=0; y<im->image->width; ++y){
+            if( isMasked(im, x, y) ){
+                im->mask_x[0] = MIN(im->mask_x[0], x);
+                im->mask_x[1] = MAX(im->mask_x[1], x);
+                im->mask_y[0] = MIN(im->mask_y[0], y);
+                im->mask_y[1] = MAX(im->mask_y[1], y);
+                numMasked++;
+            }
+        }
+    }
+    if( numMasked==0 ){
+        im->mask_x[0] = -1;
+        im->mask_x[1] = 0;
+        im->mask_y[0] = -1;
+        im->mask_y[1] = 0;
+    }
+}
+
+
 MaskedImage_P initMaskedImage(IplImage* image, mask_t* mask)
 {
     MaskedImage_P mIm = (MaskedImage_P)malloc(sizeof(MaskedImage_T));
     // image data
     mIm->mask = mask;
     mIm->image = image;
-
     initSimilarity();
-    mIm->similarity = G_globalSimilarity;
-
     mIm->isNew=0;
 
     return mIm;
@@ -190,10 +217,12 @@ MaskedImage_P initNewMaskedImage(int width, int height, int ch)
     mIm->image->nChannels = ch;
     mIm->image->imageData = (float*) malloc(width*height*ch*sizeof(float));
 
-    //TODO: remove the lines below - redundant
-    initSimilarity();
-    mIm->similarity = G_globalSimilarity;
+    mIm->mask_x[0] = -1;
+    mIm->mask_x[1] = 0;
+    mIm->mask_y[0] = -1;
+    mIm->mask_y[1] = 0;
 
+    initSimilarity();
     mIm->isNew=1;
 
     return mIm;
@@ -234,32 +263,31 @@ void setSampleMaskedImage(MaskedImage_P mIm, int x, int y, int band, float value
 
 int isMasked(MaskedImage_P mIm, int x, int y)
 {
-//    if (mIm==NULL || mIm->mask==NULL)
-//        return 0;
     return (mIm->mask[x * mIm->image->width + y]==1);
 }
 
 void setMask(MaskedImage_P mIm, int x, int y, float value) {
-//    if (mIm==NULL || mIm->mask==NULL)
-//        return;
     mIm->mask[x * mIm->image->width + y]= (value>0.f);
 }
 
 // return true if the patch contains one (or more) masked pixel
 int containsMasked(MaskedImage_P mIm, int x, int y, int S)
 {
-    int dy, dx;
-    int xs, ys;
-    for (dy=-S;dy<=S;dy++) {
-        for (dx=-S;dx<=S;dx++) {
-            xs=x+dx;
-            ys=y+dy;
-            if (xs<0 || xs>=mIm->image->height)
-                continue;
-            if (ys<0 || ys>=mIm->image->width)
-                continue;
-            if ( isMasked(mIm, xs, ys) )
+    int min_ys = MAX(0, y-S);
+    int max_ys = MIN( mIm->image->width, y+S);
+    int min_xs = MAX(0, x-S);
+    int max_xs = MIN( mIm->image->height-1, x+S);
+
+    //shortcircuit - point outside mask bounding box
+    if( (min_xs > mIm->mask_x[1]) || (max_xs < mIm->mask_x[0]) ||
+        (min_ys > mIm->mask_y[1]) || (max_ys < mIm->mask_y[0]) )
+        return 0;
+
+    for(int ys=min_ys; ys<max_ys; ys++) {
+        for(int xs=min_xs; xs<=max_xs; xs++) {
+            if( isMasked(mIm, xs, ys) ){
                 return 1;
+            }
         }
     }
     return 0;
@@ -270,7 +298,6 @@ int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P targ
 {
     float distance=0.f;
     int wsum=0;
-//    const float ssdmax = 9;
     const float ssdmax = 3;
     int dy, dx, band;
     int xks, yks;
@@ -278,7 +305,6 @@ int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P targ
     float ssd = 0;
     long res;
     float s_value, t_value;
-    //float s_gx, t_gx, s_gy, t_gy;
 
     // for each pixel in the source patch
     for ( dy=-S ; dy<=S ; ++dy ) {
@@ -289,22 +315,13 @@ int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P targ
             xkt = xt+dx;
             ykt = yt+dy;
 
-            if ( xks<1 || xks>=source->image->height-1 ) {distance+=ssdmax; continue;}
-            if ( yks<1 || yks>=source->image->width-1 ) {distance+=ssdmax; continue;}
-
             // cannot use masked pixels as a valid source of information
-            if (isMasked(source, xks, yks)) {
+            if ( xks<0 || xks>=source->image->height || yks<0 || yks>=source->image->width ||
+                 xkt<0 || xkt>=target->image->height || ykt<0 || ykt>=target->image->width ||
+                 isMasked(source, xks, yks) || isMasked(target, xkt, ykt) ){
                 distance+=ssdmax;
-                continue;}
-
-            // corresponding pixel in the target patch
-            if (xkt<1 || xkt>=target->image->height-1) {distance+=ssdmax; continue;}
-            if (ykt<1 || ykt>=target->image->width-1) {distance+=ssdmax; continue;}
-
-            // cannot use masked pixels as a valid source of information
-            if (isMasked(target, xkt, ykt)) {
-                distance+=ssdmax;
-                continue;}
+                continue;
+            }
 
             wsum++;
             ssd=0;
@@ -312,18 +329,7 @@ int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P targ
                 // pixel values
                 s_value = getSampleMaskedImage(source, xks, yks, band);
                 t_value = getSampleMaskedImage(source, xkt, ykt, band);
-
-//                // pixel horizontal gradients (Gx)
-//                s_gx = (getSampleMaskedImage(source, xks+1, yks, band) - getSampleMaskedImage(source, xks-1, yks, band))/2;
-//                t_gx = (getSampleMaskedImage(target, xkt+1, ykt, band) - getSampleMaskedImage(target, xkt-1, ykt, band))/2;
-
-//                // pixel vertical gradients (Gy)
-//                s_gy = (getSampleMaskedImage(source, xks, yks+1, band) - getSampleMaskedImage(source, xks, yks-1, band))/2;
-//                t_gy = (getSampleMaskedImage(target, xkt, ykt+1, band) - getSampleMaskedImage(target, xkt, ykt-1, band))/2;
-
-                ssd += square((float)s_value-t_value); // distance between values in [0,1]
-//                ssd += square((float)s_gx-t_gx); // distance between Gx in [0,1]
-//                ssd += square((float)s_gy-t_gy); // distance between Gy in [0,1]
+                ssd += square(s_value-t_value); // distance between values in [0,1]
             }
 
             // add pixel distance to global patch distance
@@ -345,6 +351,7 @@ MaskedImage_P copyMaskedImage(MaskedImage_P mIm)
     mask_t* newmask = (mask_t*)calloc(W*H, sizeof(mask_t));
     memcpy(newmask, mIm->mask, W*H*sizeof(mask_t));
 
+
     IplImage* newimage = (IplImage*) malloc(sizeof(IplImage));
     newimage->width = mIm->image->width;
     newimage->height = mIm->image->height;
@@ -355,6 +362,10 @@ MaskedImage_P copyMaskedImage(MaskedImage_P mIm)
 
     copy = initMaskedImage(newimage, newmask);
     copy->isNew=1;
+    copy->mask_x[0] = mIm->mask_x[0];
+    copy->mask_x[1] = mIm->mask_x[1];
+    copy->mask_y[0] = mIm->mask_y[0];
+    copy->mask_y[1] = mIm->mask_y[1];
 
     return copy;
 }
@@ -416,6 +427,7 @@ MaskedImage_P downsample(MaskedImage_P source) {
         }
         xs+=2;
     }
+    updateMaskBounds(newimage);
     return newimage;
 }
 
@@ -481,6 +493,7 @@ MaskedImage_P downsample2(MaskedImage_P source)
             }
         }
     }
+    updateMaskBounds(newimage);
     return newimage;
 }
 
@@ -517,95 +530,8 @@ MaskedImage_P upscale(MaskedImage_P source, int newW,int newH)
             }
         }
     }
-
+    updateMaskBounds(newimage);
     return newimage;
-}
-
-
-void dumpMaskedImage( MaskedImage_P img, int level, int emloop, int tag )
-{
-    char buf[256];
-
-    sprintf(buf,"img_%d_%d_%d.csv", level, emloop, tag);
-    FILE *fimg = g_fopen(buf, "w");
-
-    int H = img->image->height;
-    int W = img->image->width;
-    int c = img->image->nChannels;
-
-    for(int x=0; x<H; ++x){
-        for(int y=0; y<W; ++y){
-            float sum = 0.f;
-            for(int k=0; k<c; k++)
-                sum += img->image->imageData[(x*W+y)*c+k];
-            fprintf(fimg, "%g, ", sum );
-        }
-        fprintf(fimg, "\n");
-    }
-
-
-    sprintf(buf,"mask_%d_%d_%d.csv", level, emloop, tag);
-    FILE *fmask = g_fopen(buf, "w");
-    for(int x=0; x<H; ++x){
-        for(int y=0; y<W; ++y){
-            fprintf(fmask, "%d, ", img->mask[x*W+y]);
-        }
-        fprintf(fmask, "\n");
-    }
-    fclose(fmask);
-    fclose(fimg);
-}
-
-
-void dumpField( NNF_P nnf, int level, int emloop )
-{
-    char buf[256];
-
-    sprintf(buf,"x_%d_%d.csv", level, emloop);
-    FILE *f0 = g_fopen(buf, "w");
-    sprintf(buf,"y_%d_%d.csv", level, emloop);
-    FILE *f1 = g_fopen(buf, "w");
-    sprintf(buf,"d_%d_%d.csv", level, emloop);
-    FILE *f2 = g_fopen(buf, "w");
-
-    for(int x=0; x<nnf->fieldH; ++x){
-        for(int y=0; y<nnf->fieldW; ++y){
-            fprintf(f0, "%d, ", nnf->field[x][y][0]);
-            fprintf(f1, "%d, ", nnf->field[x][y][1]);
-            fprintf(f2, "%d, ", nnf->field[x][y][2]);
-        }
-        fprintf(f0, "\n");
-        fprintf(f1, "\n");
-        fprintf(f2, "\n");
-    }
-    fclose(f2);
-    fclose(f1);
-    fclose(f0);
-}
-
-void dumpVote(float*** vote, MaskedImage_P img, int level, int emloop)
-{
-    char buf[256];
-    sprintf(buf,"r_%d_%d.csv", level, emloop);
-    FILE *f0 = g_fopen(buf,"w");
-    sprintf(buf,"g_%d_%d.csv", level, emloop);
-    FILE *f1 = g_fopen(buf,"w");
-    sprintf(buf,"w_%d_%d.csv", level, emloop);
-    FILE *f2 = g_fopen(buf,"w");
-
-    for( int x=0 ; x<img->image->height ; ++x){
-        for( int y=0 ; y<img->image->width ; ++y){
-            fprintf(f0, "%g, ", vote[x][y][0]);
-            fprintf(f1, "%g, ", vote[x][y][1]);
-            fprintf(f2, "%g, ", vote[x][y][3]);
-        }
-        fprintf(f0, "\n");
-        fprintf(f1, "\n");
-        fprintf(f2, "\n");
-    }
-    fclose(f2);
-    fclose(f1);
-    fclose(f0);
 }
 
 /**
@@ -613,7 +539,6 @@ void dumpVote(float*** vote, MaskedImage_P img, int level, int emloop)
 *  This algorithme uses a version proposed by Xavier Philippeau
 *
 */
-
 NNF_P initNNF(MaskedImage_P input, MaskedImage_P output, int patchsize)
 {
     NNF_P nnf = (NNF_P)malloc(sizeof(NNF_T));
@@ -867,6 +792,7 @@ void MaximizationStep(MaskedImage_P target, float*** vote)
             }
         }
     }
+    updateMaskBounds(target);
 }
 
 
@@ -967,11 +893,8 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
     MaskedImage_P target = imp->nnf_TargetToSource->input;
     MaskedImage_P newtarget = NULL;
 
-    //printf("EM loop (em=%d,nnf=%d) : ", iterEM, iterNNF);
-
     // EM Loop
     for (emloop=1; emloop<=iterEM; emloop++) {
-        //printf(" %d", 1+iterEM-emloop);
         // set the new target as current target
         if (newtarget!=NULL) {
             imp->nnf_TargetToSource->input = newtarget;
@@ -981,8 +904,6 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
 
         H = target->image->height;
         W = target->image->width;
-        dumpMaskedImage(target, level, emloop, 0);
-        dumpMaskedImage(source, level, emloop, 1);
 
         for (int x=0 ; x<H ; ++x){
             for (int y=0 ; y<W ; ++y){
@@ -995,15 +916,9 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
         }
 
         // -- minimize the NNF
-        dumpField(imp->nnf_TargetToSource, level, emloop);
         minimizeNNF(imp->nnf_TargetToSource, iterNNF);
 
-//        if( level==1 && emloop==2)
-//            dumpField(imp->nnf_TargetToSource);
-
-
         // -- Now we rebuild the target using best patches from source
-        upscaled = 0;
 
         // Instead of upsizing the final target, we build the last target from the next level source image
         // So the final target is less blurry (see "Space-Time Video Completion" - page 5)
@@ -1013,16 +928,12 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
             upscaled = 1;
         } else {
             newsource = imp->pyramid[level];
-            newtarget = target; //copyMaskedImage(target);
+            newtarget = target;
             upscaled = 0;
         }
-        dumpMaskedImage(newsource, level, emloop, 2);
-        dumpMaskedImage(newtarget, level, emloop, 3);
 
         // --- EXPECTATION STEP ---
-
         // votes for best patch from NNF Source->Target (completeness) and Target->Source (coherence)
-
         vote = (float ***)malloc(newtarget->image->height*sizeof(float **));
         for (int i=0 ; i<newtarget->image->height ; ++i ){
             vote[i] = (float **)malloc(newtarget->image->width*sizeof(float *));
@@ -1034,12 +945,8 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
         ExpectationStep(imp->nnf_TargetToSource, vote, newsource, newtarget, upscaled);
 
         // --- MAXIMIZATION STEP ---
-
         // compile votes and update pixel values
-        dumpVote(vote, newtarget, level, emloop);
         MaximizationStep(newtarget, vote);
-        dumpMaskedImage(newtarget, level, emloop, 4);
-
 
         for (int i=0;i<newtarget->image->height;i++) {
             for (int j=0;j<newtarget->image->width;j++)
@@ -1049,8 +956,6 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
         }
         free(vote);
     }
-
-    //printf("\n");
 
     return newtarget;
 }
@@ -1070,6 +975,7 @@ MaskedImage_P inpaint_impl(IplImage* input, mask_t* mask, int radius)
 
     // initial image
     imp->initial = initMaskedImage(input, mask);
+    updateMaskBounds(imp->initial);
 
     // patch radius
     imp->radius = radius;
@@ -1088,6 +994,7 @@ MaskedImage_P inpaint_impl(IplImage* input, mask_t* mask, int radius)
 
     MaskedImage_P target = copyMaskedImage(source);
     clearMask(target);
+    updateMaskBounds(target);
 
     // for each level of the pyramid
     for (int level=maxlevel-1 ; level>0 ; level--) {
@@ -1119,6 +1026,10 @@ MaskedImage_P inpaint_impl(IplImage* input, mask_t* mask, int radius)
 void inpaint( const float *const in,
               float *const out, const dt_iop_roi_t *const roi_in, const dt_iop_roi_t *const roi_out, float *const mask, int nChannels )
 {
+    clock_t start, end;
+    double cpu_time_used;
+
+
     const int radius = 2.;
     int nPix = roi_in->width*roi_in->height*nChannels;
     mask_t* newmask = (mask_t*) malloc(nPix*sizeof(mask_t));
@@ -1136,7 +1047,11 @@ void inpaint( const float *const in,
         newmask[i] = (mask[i]>0.f);
     }
 
+    start = clock();
     MaskedImage_P output = inpaint_impl(&image, newmask, radius);
+    end = clock();
+    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+    fprintf(stderr, "[patchmatch] %dx%d : %g sec\n", roi_in->width, roi_in->height, cpu_time_used);
     //TODO: this is actually wrong. Needs correct implementation of coordinate transforms.
     for(int i=0; i<nPix; ++i){
         out[i] = output->image->imageData[i];
