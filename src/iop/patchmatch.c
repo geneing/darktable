@@ -278,7 +278,7 @@ int containsMasked(MaskedImage_P mIm, int x, int y, int S)
     int min_xs = MAX(0, x-S);
     int max_xs = MIN( mIm->image->height-1, x+S);
 
-    //shortcircuit - point outside mask bounding box
+    //shortcircuit - point is outside mask bounding box
     if( (min_xs > mIm->mask_x[1]) || (max_xs < mIm->mask_x[0]) ||
         (min_ys > mIm->mask_y[1]) || (max_ys < mIm->mask_y[0]) )
         return 0;
@@ -371,7 +371,7 @@ MaskedImage_P copyMaskedImage(MaskedImage_P mIm)
 }
 
 // return a downsampled image (factor 1/2)
-MaskedImage_P downsample(MaskedImage_P source) {
+MaskedImage_P downsample2(MaskedImage_P source) {
     const float kernel[6] = {1,2,4,4,2,1};
     int H, W;
     int x, y;
@@ -431,14 +431,8 @@ MaskedImage_P downsample(MaskedImage_P source) {
     return newimage;
 }
 
-void clearMask( MaskedImage_P img )
-{
-    for(int i=0; i< img->image->width*img->image->height; ++i)
-        img->mask[i]=0;
-}
-
 // return a downsampled image (factor 1/2)
-MaskedImage_P downsample2(MaskedImage_P source)
+MaskedImage_P downsample(MaskedImage_P source)
 {
     const float kernel[6] = {1,5,10,10,5,1};
     int H, W;
@@ -495,6 +489,102 @@ MaskedImage_P downsample2(MaskedImage_P source)
     }
     updateMaskBounds(newimage);
     return newimage;
+}
+
+
+void dumpMaskedImage( MaskedImage_P img, int level, int emloop, int tag )
+{
+    char buf[256];
+
+    sprintf(buf,"img_%d_%d_%d.csv", level, emloop, tag);
+    FILE *fimg = g_fopen(buf, "w");
+
+    int H = img->image->height;
+    int W = img->image->width;
+    int c = img->image->nChannels;
+
+    for(int x=0; x<H; ++x){
+        for(int y=0; y<W; ++y){
+//            float sum = 0.f;
+//            for(int k=0; k<c; k++)
+//                sum += img->image->imageData[(x*W+y)*c+k];
+//            fprintf(fimg, "%g, ", sum );
+            fprintf(fimg, "%g, ", img->image->imageData[(x*W+y)*c+0] );
+        }
+        fprintf(fimg, "\n");
+    }
+
+
+    sprintf(buf,"mask_%d_%d_%d.csv", level, emloop, tag);
+    FILE *fmask = g_fopen(buf, "w");
+    for(int x=0; x<H; ++x){
+        for(int y=0; y<W; ++y){
+            fprintf(fmask, "%d, ", img->mask[x*W+y]);
+        }
+        fprintf(fmask, "\n");
+    }
+    fclose(fmask);
+    fclose(fimg);
+}
+
+
+void dumpField( NNF_P nnf, int level, int emloop )
+{
+    char buf[256];
+
+    sprintf(buf,"x_%d_%d.csv", level, emloop);
+    FILE *f0 = g_fopen(buf, "w");
+    sprintf(buf,"y_%d_%d.csv", level, emloop);
+    FILE *f1 = g_fopen(buf, "w");
+    sprintf(buf,"d_%d_%d.csv", level, emloop);
+    FILE *f2 = g_fopen(buf, "w");
+
+    for(int x=0; x<nnf->fieldH; ++x){
+        for(int y=0; y<nnf->fieldW; ++y){
+            fprintf(f0, "%d, ", nnf->field[x][y][0]);
+            fprintf(f1, "%d, ", nnf->field[x][y][1]);
+            fprintf(f2, "%d, ", nnf->field[x][y][2]);
+        }
+        fprintf(f0, "\n");
+        fprintf(f1, "\n");
+        fprintf(f2, "\n");
+    }
+    fclose(f2);
+    fclose(f1);
+    fclose(f0);
+}
+
+void dumpVote(float*** vote, MaskedImage_P img, int level, int emloop)
+{
+    char buf[256];
+    sprintf(buf,"r_%d_%d.csv", level, emloop);
+    FILE *f0 = g_fopen(buf,"w");
+    sprintf(buf,"g_%d_%d.csv", level, emloop);
+    FILE *f1 = g_fopen(buf,"w");
+    sprintf(buf,"w_%d_%d.csv", level, emloop);
+    FILE *f2 = g_fopen(buf,"w");
+
+    for( int x=0 ; x<img->image->height ; ++x){
+        for( int y=0 ; y<img->image->width ; ++y){
+            fprintf(f0, "%g, ", vote[x][y][0]);
+            fprintf(f1, "%g, ", vote[x][y][1]);
+            fprintf(f2, "%g, ", vote[x][y][3]);
+        }
+        fprintf(f0, "\n");
+        fprintf(f1, "\n");
+        fprintf(f2, "\n");
+    }
+    fclose(f2);
+    fclose(f1);
+    fclose(f0);
+}
+
+
+
+void clearMask( MaskedImage_P img )
+{
+    for(int i=0; i< img->image->width*img->image->height; ++i)
+        img->mask[i]=0;
 }
 
 // return an upscaled image
@@ -828,7 +918,7 @@ void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage
 
             // vote for each pixel inside the input patch
 
-            if( !containsMasked(source, x, y, R+16) ){ //why R+4?
+            if( !containsMasked(source, x, y, R+4) ){ //why R+4?
                 vote[x][y][0] = getSampleMaskedImage(source, x, y, 0);
                 vote[x][y][1] = getSampleMaskedImage(source, x, y, 1);
                 vote[x][y][2] = getSampleMaskedImage(source, x, y, 2);
@@ -904,6 +994,8 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
 
         H = target->image->height;
         W = target->image->width;
+        dumpMaskedImage(target, level, emloop, 0);
+        dumpMaskedImage(source, level, emloop, 1);
 
         for (int x=0 ; x<H ; ++x){
             for (int y=0 ; y<W ; ++y){
@@ -916,6 +1008,7 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
         }
 
         // -- minimize the NNF
+        dumpField(imp->nnf_TargetToSource, level, emloop);
         minimizeNNF(imp->nnf_TargetToSource, iterNNF);
 
         // -- Now we rebuild the target using best patches from source
@@ -932,6 +1025,9 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
             upscaled = 0;
         }
 
+        dumpMaskedImage(newsource, level, emloop, 2);
+        dumpMaskedImage(newtarget, level, emloop, 3);
+
         // --- EXPECTATION STEP ---
         // votes for best patch from NNF Source->Target (completeness) and Target->Source (coherence)
         vote = (float ***)malloc(newtarget->image->height*sizeof(float **));
@@ -946,7 +1042,9 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
 
         // --- MAXIMIZATION STEP ---
         // compile votes and update pixel values
+        dumpVote(vote, newtarget, level, emloop);
         MaximizationStep(newtarget, vote);
+        dumpMaskedImage(newtarget, level, emloop, 4);
 
         for (int i=0;i<newtarget->image->height;i++) {
             for (int j=0;j<newtarget->image->width;j++)

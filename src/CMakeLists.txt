@@ -521,10 +521,10 @@ if(NOT CUSTOM_CFLAGS)
       set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfpmath=sse")
     endif()
 
-    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -g3 -ggdb3")
+    set(CMAKE_C_FLAGS_DEBUG "-O0 ${CMAKE_C_FLAGS_DEBUG} -g3 -ggdb3")
     set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -fexpensive-optimizations")
   else()
-    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0")
+    set(CMAKE_C_FLAGS_DEBUG  "-O0 ${CMAKE_C_FLAGS_DEBUG}")
   endif()
 
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${MARCH} ${DT_REQ_INSTRUCTIONS} -g")
