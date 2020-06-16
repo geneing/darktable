@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2019 eugene ingerman.
+    copyright (c) 2020 eugene ingerman.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -42,8 +42,6 @@
 
 //#define DUMP
 
-// the maximum value returned by MaskedImage.distance()
-#define DSCALE 65535
 #define INCREASE_PYRAMID_SIZE_RATE 2
 
 typedef unsigned char uchar;
@@ -77,11 +75,15 @@ typedef struct{
     int S;
 
     // Nearest-Neighbor Field 1 pixel = { x_target, y_target, distance_scaled }
-    int *** field;
+    struct Field {
+        int xt, yt;
+        float distance;
+    } **field;
     int fieldH;
     int fieldW;
 } NNF_T;
 typedef NNF_T* NNF_P;
+typedef struct Field Field;
 
 typedef struct{
     //initial image
@@ -102,66 +104,23 @@ typedef struct{
 typedef Inpaint_T* Inpaint_P;
 
 
-float max1(float a, float b)
+static inline float max1(float a, float b)
 {
     return (a + b + fabs(a-b) ) / 2;
 }
 
-float min1(float a, float b)
+static inline float min1(float a, float b)
 {
     return (a + b - fabs(a-b) ) / 2;
 }
 
-float square(float x)
+static inline float square(float x)
 {
     return x*x;
 }
 
-static float* G_globalSimilarity;
-static int G_initSim;
 void updateMaskBounds( MaskedImage_P im );
 int isMasked(MaskedImage_P mIm, int x, int y);
-
-void initSimilarity()
-{
-    int i, j, k, length;
-    float base[11] = {1.0, 0.99, 0.96, 0.83, 0.38, 0.11, 0.02, 0.005, 0.0006, 0.0001, 0 };
-    float t, vj, vk;
-    length = (DSCALE+1);
-    if (!G_initSim) {
-        G_globalSimilarity = (float *) calloc(length, sizeof(float));
-        for ( i=0 ; i<length ; ++i) {
-            t = (float)i/length;
-            j = (int)(100*t);
-            k=j+1;
-            vj = (j<11)?base[j]:0;
-            vk = (k<11)?base[k]:0;
-            G_globalSimilarity[i] = vj + (100*t-j)*(vk-vj);
-        }
-    }
-    G_initSim = 1;
-}
-
-void initSimilarity0()
-{
-    int i, length;
-    float s_zero = 0.999f;
-    float t_halfmax = 0.10f;
-    float t;
-    float x  = (s_zero - 0.5f) * 2.f;
-    float invtanh = 0.5f * logf((1.f + x) / (1.f - x));
-    float coef = invtanh / t_halfmax;
-
-    length = (DSCALE+1);
-    if (!G_initSim){
-        G_globalSimilarity = (float *) calloc(length, sizeof(float));
-        for (i=0;i<length;i++) {
-            t = (float)i/length;
-            G_globalSimilarity[i] = 0.5f - 0.5f * tanh(coef * (t - t_halfmax));
-        }
-    }
-    G_initSim = 1;
-}
 
 //compute mask bounding box to speedup containsMasked computation
 void updateMaskBounds( MaskedImage_P im )
@@ -199,7 +158,6 @@ MaskedImage_P initMaskedImage(IplImage* image, mask_t* mask)
     // image data
     mIm->mask = mask;
     mIm->image = image;
-    initSimilarity();
     mIm->isNew=0;
 
     return mIm;
@@ -224,9 +182,7 @@ MaskedImage_P initNewMaskedImage(int width, int height, int ch)
     mIm->mask_y[0] = -1;
     mIm->mask_y[1] = 0;
 
-    initSimilarity();
     mIm->isNew=1;
-
     return mIm;
 }
 
@@ -250,19 +206,20 @@ void freeMaskedImage(MaskedImage_P mIm)
 }
 
 //TODO: Optimize this!
-static inline float getSampleMaskedImage(const MaskedImage_P mIm, int x, int y, int band)
+static inline float* getSampleMaskedImage(const MaskedImage_P mIm, int x, int y)
 {
     int channels=mIm->image->nChannels;
     int step = mIm->image->width * channels;
-    return mIm->image->imageData[x*step+y*channels+band];
+    return (mIm->image->imageData+x*step+y*channels);
 }
 
 //TODO: Optimize this!
-void setSampleMaskedImage(MaskedImage_P mIm, int x, int y, int band, float value)
+void setSampleMaskedImage(MaskedImage_P mIm, int x, int y, float* value)
 {
     int channels=mIm->image->nChannels;
     int step = mIm->image->width * channels;
-    mIm->image->imageData[x*step+y*channels+band] = value;
+    for(int band=0; band<3; ++band )
+        mIm->image->imageData[x*step+y*channels+band] = value[band];
 }
 
 int isMasked(MaskedImage_P mIm, int x, int y)
@@ -303,18 +260,27 @@ static inline float gammaConversion( float rgb)
       return rgb <= 0.0031308 ? 12.92 * rgb : (1.0 + 0.055) * powf(rgb, 1.0 / 2.4) - 0.055;
 }
 
+static inline float RGB_distance( const float* c1, const float* c2)
+{
+    float mean_red = (c1[0] + c2[0])/2.f;
+    float dRed = (c1[0]-c2[0]);
+    float dGreen = (c1[1]-c2[1]);
+    float dBlue = (c1[2]-c2[2]);
+    float distance = sqrtf( (2.f+mean_red)*dRed*dRed + 4.f*dGreen*dGreen + (3.f-mean_red)*dBlue*dBlue );
+    return min1(distance/3.f, 1.f);
+}
+
 // distance between two patches in two images
-int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P target, int xt, int yt, int S)
+float distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P target, int xt, int yt, int S)
 {
     float distance=0.f;
     int wsum=0;
-    const float ssdmax = 3;
-    int dy, dx, band;
+    const float distmax = 1.f;
+    int dy, dx;
     int xks, yks;
     int xkt, ykt;
-    float ssd = 0;
-    long res;
-    float s_value, t_value;
+    float rgb_dist = 0;
+    float res;
 
     // for each pixel in the source patch
     for ( dy=-S ; dy<=S ; ++dy ) {
@@ -330,24 +296,21 @@ int distanceMaskedImage(MaskedImage_P source, int xs, int ys, MaskedImage_P targ
             if ( xks<0 || xks>=source->image->height || yks<0 || yks>=source->image->width ||
                  xkt<0 || xkt>=target->image->height || ykt<0 || ykt>=target->image->width ||
                  isMasked(source, xks, yks) || isMasked(target, xkt, ykt) ){
-                distance+=ssdmax;
+                distance+=distmax;
                 continue;
             }
 
-            ssd=0;
-            for (band=0; band<3; ++band) {
-                // pixel values
-                s_value = gammaConversion(getSampleMaskedImage(source, xks, yks, band));
-                t_value = gammaConversion(getSampleMaskedImage(source, xkt, ykt, band));
-                ssd += square(s_value-t_value); // distance between values in [0,1]
-            }
+            // pixel values
+            const float *s_value = getSampleMaskedImage(source, xks, yks);
+            const float *t_value = getSampleMaskedImage(source, xkt, ykt);
+            rgb_dist = RGB_distance(s_value, t_value); // distance between values in [0,1]
 
             // add pixel distance to global patch distance
-            distance += ssd/ssdmax;
+            distance += rgb_dist/distmax;
         }
     }
 
-    res = (int)(DSCALE*distance/wsum);
+    res = distance/wsum;
     return res;
 }
 
@@ -413,9 +376,10 @@ MaskedImage_P downsample2(MaskedImage_P source) {
                     if (source->mask[xk*W+yk]) continue;
 
                     k = kernel[2+dx]*ky;
-                    r+= k*getSampleMaskedImage(source, xk, yk, 0);
-                    g+= k*getSampleMaskedImage(source, xk, yk, 1);
-                    b+= k*getSampleMaskedImage(source, xk, yk, 2);
+                    float* rgb = getSampleMaskedImage(source, xk, yk);
+                    r+= k*rgb[0];
+                    g+= k*rgb[1];
+                    b+= k*rgb[2];
                     ksum+=k;
                     m++;
                 }
@@ -423,15 +387,13 @@ MaskedImage_P downsample2(MaskedImage_P source) {
             if (ksum>0) {r/=ksum; g/=ksum; b/=ksum;}
 
             if (m!=0) {
-                setSampleMaskedImage(newimage, x, y, 0, r);
-                setSampleMaskedImage(newimage, x, y, 1, g);
-                setSampleMaskedImage(newimage, x, y, 2, b);
+                float rgb[]={ r, g, b };
+                setSampleMaskedImage(newimage, x, y, rgb);
                 setMask(newimage, x, y, 0);
             } else {
+                float rgb[]={ 0, 0, 0 };
                 setMask(newimage, x, y, 1);
-                setSampleMaskedImage(newimage, x, y, 0, 0);
-                setSampleMaskedImage(newimage, x, y, 1, 0);
-                setSampleMaskedImage(newimage, x, y, 2, 0);
+                setSampleMaskedImage(newimage, x, y, rgb);
             }
             ys+=2;
         }
@@ -474,9 +436,10 @@ MaskedImage_P downsample1(MaskedImage_P source)
                         continue;
 
                     k = kernel[2+dx]*ky;
-                    r+= k*getSampleMaskedImage(source, xk, yk, 0);
-                    g+= k*getSampleMaskedImage(source, xk, yk, 1);
-                    b+= k*getSampleMaskedImage(source, xk, yk, 2);
+                    float* rgb = getSampleMaskedImage(source, xk, yk);
+                    r+= k*rgb[0];
+                    g+= k*rgb[1];
+                    b+= k*rgb[2];
                     ksum+=k;
                     m++;
                 }
@@ -488,9 +451,8 @@ MaskedImage_P downsample1(MaskedImage_P source)
             }
 
             if (m!=0) {
-                setSampleMaskedImage(newimage, x/2, y/2, 0, r);
-                setSampleMaskedImage(newimage, x/2, y/2, 1, g);
-                setSampleMaskedImage(newimage, x/2, y/2, 2, b);
+                float rgb[]={ r, g, b };
+                setSampleMaskedImage(newimage, x/2, y/2, rgb);
                 setMask(newimage, x/2, y/2, 0);
             } else {
                 setMask(newimage, x/2, y/2, 1);
@@ -532,23 +494,22 @@ MaskedImage_P downsample(MaskedImage_P source)
                         continue;
 
                     k = kernel[dx]*ky;
-                    r+= k*getSampleMaskedImage(source, xk, yk, 0);
-                    g+= k*getSampleMaskedImage(source, xk, yk, 1);
-                    b+= k*getSampleMaskedImage(source, xk, yk, 2);
+                    float* rgb = getSampleMaskedImage(source, xk, yk);
+                    r+= k*rgb[0];
+                    g+= k*rgb[1];
+                    b+= k*rgb[2];
                     ksum+=k;
                     m++;
                 }
             }
 
             if (ksum>0) {
-                setSampleMaskedImage(newimage, x/2, y/2, 0, r/ksum);
-                setSampleMaskedImage(newimage, x/2, y/2, 1, g/ksum);
-                setSampleMaskedImage(newimage, x/2, y/2, 2, b/ksum);
+                float rgb[]={ r/ksum, g/ksum, b/ksum };
+                setSampleMaskedImage(newimage, x/2, y/2, rgb);
                 setMask(newimage, x/2, y/2, 0.f);
             } else {
-                setSampleMaskedImage(newimage, x/2, y/2, 0, 0.);
-                setSampleMaskedImage(newimage, x/2, y/2, 1, 0.);
-                setSampleMaskedImage(newimage, x/2, y/2, 2, 0.);
+                float rgb[]={ 0, 0, 0 };
+                setSampleMaskedImage(newimage, x/2, y/2, rgb);
                 setMask(newimage, x/2, y/2, 1.f);
             }
         }
@@ -607,9 +568,9 @@ void dumpField( NNF_P nnf, int level, int emloop )
 
     for(int x=0; x<nnf->fieldH; ++x){
         for(int y=0; y<nnf->fieldW; ++y){
-            fprintf(f0, "%d, ", nnf->field[x][y][0]);
-            fprintf(f1, "%d, ", nnf->field[x][y][1]);
-            fprintf(f2, "%d, ", nnf->field[x][y][2]);
+            fprintf(f0, "%d, ", nnf->field[x][y].xt);
+            fprintf(f1, "%d, ", nnf->field[x][y].yt);
+            fprintf(f2, "%g, ", nnf->field[x][y].distance);
         }
         fprintf(f0, "\n");
         fprintf(f1, "\n");
@@ -679,14 +640,12 @@ MaskedImage_P upscale(MaskedImage_P source, int newW,int newH)
 
             // copy to new image
             if ( isMasked(source, xs, ys) ) {
-                setSampleMaskedImage(newimage, x, y, 0, 0);
-                setSampleMaskedImage(newimage, x, y, 1, 0);
-                setSampleMaskedImage(newimage, x, y, 2, 0);
+                float rgb[]={ 0, 0, 0 };
+                setSampleMaskedImage(newimage, x, y, rgb);
                 setMask(newimage, x, y, 1);
             } else {
-                setSampleMaskedImage(newimage, x, y, 0, getSampleMaskedImage(source, xs, ys, 0));
-                setSampleMaskedImage(newimage, x, y, 1, getSampleMaskedImage(source, xs, ys, 1));
-                setSampleMaskedImage(newimage, x, y, 2, getSampleMaskedImage(source, xs, ys, 2));
+                float * rgb = getSampleMaskedImage(source, xs, ys);
+                setSampleMaskedImage(newimage, x, y, rgb);
                 setMask(newimage, x, y, 0);
             }
         }
@@ -715,36 +674,30 @@ NNF_P initNNF(MaskedImage_P input, MaskedImage_P output, int patchsize)
 
 
 // compute distance between two patch
-int distanceNNF(NNF_P nnf, int x,int y, int xp,int yp)
+float distanceNNF(NNF_P nnf, int x,int y, int xp,int yp)
 {
     return distanceMaskedImage(nnf->input,x,y, nnf->output,xp,yp, nnf->S);
 }
 
 void allocNNFField(NNF_P nnf)
 {
-    int i, j;
+    int i;
     if (nnf!=NULL){
         nnf->fieldH=nnf->input->image->height;
         nnf->fieldW=nnf->input->image->width;
-        nnf->field = (int ***) malloc(sizeof(int**)*nnf->fieldH);
+        nnf->field = (Field **) malloc(sizeof(Field*)*nnf->fieldH);
 
         for ( i=0 ; i < nnf->fieldH ; i++ ) {
-            nnf->field[i] = (int **) malloc(sizeof(int*)*nnf->fieldW);
-            for (j=0 ; j<nnf->fieldW ; j++ ) {
-                nnf->field[i][j] = (int *) calloc(3,sizeof(int));
-            }
+            nnf->field[i] = (Field *) malloc(sizeof(Field)*nnf->fieldW);
         }
     }
 }
 
 void freeNNFField(NNF_P nnf)
 {
-    int i, j;
+    int i;
     if ( nnf->field != NULL ){
         for ( i=0 ; i < nnf->fieldH ; ++i ){
-            for ( j=0 ; j < nnf->fieldW ; ++j ){
-                free( nnf->field[i][j] );
-            }
             free(nnf->field[i]);
         }
         free(nnf->field);
@@ -771,13 +724,13 @@ void initializeNNF(NNF_P nnf)
 
     for (x=0;x<nnf->fieldH;++x) {
         for (y=0;y<nnf->fieldW;++y) {
-            nnf->field[x][y][2] = distanceNNF(nnf, x, y,  nnf->field[x][y][0], nnf->field[x][y][1]);
-            // if the distance is INFINITY (all pixels masked ?), try to find a better link
+            nnf->field[x][y].distance = distanceNNF(nnf, x, y,  nnf->field[x][y].xt, nnf->field[x][y].yt);
+            // if the distance is high (all pixels masked ?), try to find a better link
             iter=0;
-            while ( nnf->field[x][y][2] >= DSCALE && iter<maxretry) {
-                nnf->field[x][y][0] = rand() % (nnf->output->image->height);
-                nnf->field[x][y][1] = rand() % (nnf->output->image->width);
-                nnf->field[x][y][2] = distanceNNF(nnf, x, y, nnf->field[x][y][0], nnf->field[x][y][1]);
+            while ( nnf->field[x][y].distance >= 1 && iter<maxretry) {
+                nnf->field[x][y].xt = rand() % (nnf->output->image->height);
+                nnf->field[x][y].yt = rand() % (nnf->output->image->width);
+                nnf->field[x][y].distance = distanceNNF(nnf, x, y, nnf->field[x][y].xt, nnf->field[x][y].yt);
                 iter++;
             }
         }
@@ -793,9 +746,9 @@ void randomize(NNF_P nnf)
     allocNNFField(nnf);
     for (i=0; i<nnf->input->image->height; ++i){
         for (j=0; j<nnf->input->image->width; ++j){
-            nnf->field[i][j][0] = rand() % (nnf->output->image->height);
-            nnf->field[i][j][1] = rand() % (nnf->output->image->width);
-            nnf->field[i][j][2] = DSCALE;
+            nnf->field[i][j].xt = rand() % (nnf->output->image->height);
+            nnf->field[i][j].yt = rand() % (nnf->output->image->width);
+            nnf->field[i][j].distance = 1;
         }
     }
     initializeNNF(nnf);
@@ -815,9 +768,9 @@ void initializeNNFFromOtherNNF(NNF_P nnf, NNF_P otherNnf)
         for (y=0;y<nnf->fieldW;++y) {
             xlow = (int)(min1(x/fx, otherNnf->input->image->height-1));
             ylow = (int)(min1(y/fy, otherNnf->input->image->width-1));
-            nnf->field[x][y][0] = otherNnf->field[xlow][ylow][0]*fx;
-            nnf->field[x][y][1] = otherNnf->field[xlow][ylow][1]*fy;
-            nnf->field[x][y][2] = DSCALE;
+            nnf->field[x][y].xt = otherNnf->field[xlow][ylow].xt*fx;
+            nnf->field[x][y].yt = otherNnf->field[xlow][ylow].yt*fy;
+            nnf->field[x][y].distance = 1;
         }
     }
     initializeNNF(nnf);
@@ -827,35 +780,36 @@ void initializeNNFFromOtherNNF(NNF_P nnf, NNF_P otherNnf)
 // minimize a single link (see "PatchMatch" - page 4)
 void minimizeLinkNNF(NNF_P nnf, int x, int y, int dir)
 {
-    int xp,yp,dp,wi, xpi, ypi;
+    int xp,yp,wi, xpi, ypi;
+    float dp;
     //Propagation Up/Down
     if (x-dir>=0 && x-dir<nnf->input->image->height) {
-        xp = nnf->field[x-dir][y][0]+dir;
-        yp = nnf->field[x-dir][y][1];
+        xp = nnf->field[x-dir][y].xt+dir;
+        yp = nnf->field[x-dir][y].yt;
         dp = distanceNNF(nnf, x, y, xp, yp);
-        if (dp < nnf->field[x][y][2] && xp < nnf->input->image->height && yp < nnf->input->image->width ) {
-            nnf->field[x][y][0] = xp;
-            nnf->field[x][y][1] = yp;
-            nnf->field[x][y][2] = dp;
+        if (dp < nnf->field[x][y].distance && xp < nnf->input->image->height && yp < nnf->input->image->width ) {
+            nnf->field[x][y].xt = xp;
+            nnf->field[x][y].yt = yp;
+            nnf->field[x][y].distance = dp;
         }
     }
 
     //Propagation Left/Right
     if (y-dir>=0 && y-dir<nnf->input->image->width) {
-        xp = nnf->field[x][y-dir][0];
-        yp = nnf->field[x][y-dir][1]+dir;
+        xp = nnf->field[x][y-dir].xt;
+        yp = nnf->field[x][y-dir].yt+dir;
         dp = distanceNNF(nnf, x, y, xp, yp);
-        if (dp < nnf->field[x][y][2] && xp < nnf->output->image->height && yp < nnf->output->image->width ) {
-            nnf->field[x][y][0] = xp;
-            nnf->field[x][y][1] = yp;
-            nnf->field[x][y][2] = dp;
+        if (dp < nnf->field[x][y].distance && xp < nnf->output->image->height && yp < nnf->output->image->width ) {
+            nnf->field[x][y].xt = xp;
+            nnf->field[x][y].yt = yp;
+            nnf->field[x][y].distance = dp;
         }
     }
 
     //Random search
     wi=MAX(nnf->output->image->width, nnf->output->image->height);
-    xpi=nnf->field[x][y][0];
-    ypi=nnf->field[x][y][1];
+    xpi=nnf->field[x][y].xt;
+    ypi=nnf->field[x][y].yt;
     while (wi>0) {
         int r=(rand() % (2*wi)) - wi;
         xp = xpi + r;
@@ -865,10 +819,10 @@ void minimizeLinkNNF(NNF_P nnf, int x, int y, int dir)
         yp = MAX(0, MIN(nnf->output->image->width-1, yp ));
 
         dp = distanceNNF(nnf,x,y, xp,yp);
-        if (dp<nnf->field[x][y][2]) {
-            nnf->field[x][y][0] = xp;
-            nnf->field[x][y][1] = yp;
-            nnf->field[x][y][2] = dp;
+        if (dp<nnf->field[x][y].distance) {
+            nnf->field[x][y].xt = xp;
+            nnf->field[x][y].yt = yp;
+            nnf->field[x][y].distance = dp;
         }
         wi/=2;
     }
@@ -887,13 +841,13 @@ void minimizeNNF(NNF_P nnf, int pass)
         // scanline order
         for (int y=min_y; y<=max_y; ++y)
             for (int x=min_x; x<max_x; ++x)
-                if (nnf->field[x][y][2]>0)
+                if (nnf->field[x][y].distance>0)
                     minimizeLinkNNF(nnf, x, y, +1);
 
         // reverse scanline order
         for (int y=max_y; y>=min_y; y--)
             for (int x=max_x; x>=min_x; x--)
-                if (nnf->field[x][y][2]>0)
+                if (nnf->field[x][y].distance>0)
                     minimizeLinkNNF(nnf, x, y, -1);
     }
 }
@@ -945,10 +899,8 @@ void MaximizationStep(MaskedImage_P target, float*** vote)
                 float r = (vote[x][y][0]/vote[x][y][3]);
                 float g = (vote[x][y][1]/vote[x][y][3]);
                 float b = (vote[x][y][2]/vote[x][y][3]);
-
-                setSampleMaskedImage(target, x, y, 0, r );
-                setSampleMaskedImage(target, x, y, 1, g );
-                setSampleMaskedImage(target, x, y, 2, b );
+                float rgb[]={r, g, b};
+                setSampleMaskedImage(target, x, y, rgb);
                 setMask(target, x, y, 0);
             }
         }
@@ -962,24 +914,34 @@ void weightedCopy(MaskedImage_P src, int xs, int ys, float*** vote, int xd,int y
     if (isMasked(src, xs, ys))
         return;
 
-    vote[xd][yd][0] += w*getSampleMaskedImage(src, xs, ys, 0);
-    vote[xd][yd][1] += w*getSampleMaskedImage(src, xs, ys, 1);
-    vote[xd][yd][2] += w*getSampleMaskedImage(src, xs, ys, 2);
+    float *rgb = getSampleMaskedImage(src, xs, ys);
+    vote[xd][yd][0] += w*rgb[0];
+    vote[xd][yd][1] += w*rgb[1];
+    vote[xd][yd][2] += w*rgb[2];
     vote[xd][yd][3] += w;
 }
 
-static inline float similarity( int distance )
+static inline float similarity( float distance )
 {
-    if( distance<0 || distance >= DSCALE )
+    const float s_zero = 0.999f;
+    const float t_halfmax = 0.1f;
+    const float x  = (s_zero - 0.5f) * 2.f;
+    const float invtanh = 0.5f * logf((1.f + x) / (1.f - x));
+    const float coef = invtanh / t_halfmax;
+
+    if( distance<0 || distance >= 1. )
         return 0;
-    return G_globalSimilarity[ distance ];
+
+    float similarity = 0.5f - 0.5f * tanh(coef * (distance - t_halfmax));
+
+    return similarity;
 }
 
 // Expectation Step : vote for best estimations of each pixel
 void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage_P target, int upscale)
 {
     int y, x, /*H, W,*/ dy, dx;
-    int*** field = nnf->field;
+    Field** field = nnf->field;
     int R = nnf->S; /////////////int R = nnf->PatchSize;
     if(upscale)
         R *= 2;
@@ -999,9 +961,10 @@ void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage
             // vote for each pixel inside the input patch
 
             if( !containsMasked(source, x, y, R+4) ){ //why R+4?
-                vote[x][y][0] = getSampleMaskedImage(source, x, y, 0);
-                vote[x][y][1] = getSampleMaskedImage(source, x, y, 1);
-                vote[x][y][2] = getSampleMaskedImage(source, x, y, 2);
+                float *rgb = getSampleMaskedImage(source, x, y);
+                vote[x][y][0] = rgb[0];
+                vote[x][y][1] = rgb[1];
+                vote[x][y][2] = rgb[2];
                 vote[x][y][3] = 1.f;
             }
             else {
@@ -1019,18 +982,18 @@ void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage
                         if (upscale) {
                             if (xpt<0 || (xpt/2)>=H) continue;
                             if (ypt<0 || (ypt/2)>=W) continue;
-                            xst = 2 * field[xpt / 2][ypt / 2][0] + (xpt % 2);
-                            yst = 2 * field[xpt / 2][ypt / 2][1] + (ypt % 2);
+                            xst = 2 * field[xpt / 2][ypt / 2].xt + (xpt % 2);
+                            yst = 2 * field[xpt / 2][ypt / 2].yt + (ypt % 2);
 
-                            int dp = field[xpt / 2][ypt / 2][2];
+                            int dp = field[xpt / 2][ypt / 2].distance;
                             // similarity measure between the two patches
                             w = similarity(dp);
                         } else {
                             if (xpt<0 || xpt>=H) continue;
                             if (ypt<0 || ypt>=W) continue;
-                            xst = field[xpt][ypt][0];
-                            yst = field[xpt][ypt][1];
-                            int dp = field[xpt][ypt][2];
+                            xst = field[xpt][ypt].xt;
+                            yst = field[xpt][ypt].yt;
+                            int dp = field[xpt][ypt].distance;
                             // similarity measure between the two patches
                             w = similarity(dp);
                         }
@@ -1080,9 +1043,9 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
         for (int x=0 ; x<H ; ++x){
             for (int y=0 ; y<W ; ++y){
                 if (!containsMasked(source, x, y, imp->radius)) {
-                    imp->nnf_TargetToSource->field[x][y][0] = x;
-                    imp->nnf_TargetToSource->field[x][y][1] = y;
-                    imp->nnf_TargetToSource->field[x][y][2] = 0;
+                    imp->nnf_TargetToSource->field[x][y].xt = x;
+                    imp->nnf_TargetToSource->field[x][y].yt = y;
+                    imp->nnf_TargetToSource->field[x][y].distance = 0;
                 }
             }
         }
