@@ -104,14 +104,52 @@ typedef struct{
 typedef Inpaint_T* Inpaint_P;
 
 
+typedef struct{
+    float r,g,b;
+    float w;
+} Vote_T;
+typedef Vote_T* Vote_P;
+
+typedef struct{
+    Vote_P vote;
+    int rows, cols;
+    int size;
+} Votes_T;
+typedef Votes_T* Votes_P;
+
+static Votes_P alloc_votes( int rows, int cols )
+{
+    Votes_P votes = (Votes_P) malloc(sizeof(Votes_T));
+    votes->rows = rows;
+    votes->cols = cols;
+    votes->size = rows*cols;
+    votes->vote = (Vote_P) malloc(sizeof(Vote_T)*votes->size);
+    memset(votes->vote, 0, sizeof(Vote_T)*votes->size);
+    return votes;
+}
+
+static void free_votes( Votes_P votes)
+{
+    free(votes->vote);
+    free(votes);
+}
+
+static inline Vote_P get_vote(Votes_P votes, int x, int y)
+{
+    assert( x>=0 && x<votes->rows );
+    assert( y>=0 && y<votes->cols );
+    return votes->vote+x*votes->cols+y;
+}
+
+
 static inline float max1(float a, float b)
 {
-    return (a + b + fabs(a-b) ) / 2;
+    return (a > b)? a : b;
 }
 
 static inline float min1(float a, float b)
 {
-    return (a + b - fabs(a-b) ) / 2;
+    return (a < b)? a : b;
 }
 
 static inline float square(float x)
@@ -344,127 +382,6 @@ MaskedImage_P copyMaskedImage(MaskedImage_P mIm)
 }
 
 // return a downsampled image (factor 1/2)
-MaskedImage_P downsample2(MaskedImage_P source) {
-    const float kernel[6] = {1,2,4,4,2,1};
-    int H, W;
-    int x, y;
-    int xs, ys;
-    int dx, dy;
-    int xk, yk;
-    float k, ky;
-    float r=0, g=0, b=0, m=0, ksum=0;
-
-    H=source->image->height;
-    W=source->image->width;
-    int newW=W/2, newH=H/2;
-
-    MaskedImage_P newimage = initNewMaskedImage(newW, newH, source->image->nChannels);
-    xs=0;
-    for(x=0;x<newH;++x) {
-        ys=0;
-        for(y=0;y<newW;++y) {
-            r=0; g=0; b=0; m=0; ksum=0;
-
-            for(dy=-2;dy<=3;dy++) {
-                yk=ys+dy;
-                if (yk<0 || yk>=W) continue;
-                ky = kernel[2+dy];
-                for(dx=-2;dx<=3;dx++) {
-                    xk = xs+dx;
-                    if (xk<0 || xk>=H) continue;
-
-                    if (source->mask[xk*W+yk]) continue;
-
-                    k = kernel[2+dx]*ky;
-                    float* rgb = getSampleMaskedImage(source, xk, yk);
-                    r+= k*rgb[0];
-                    g+= k*rgb[1];
-                    b+= k*rgb[2];
-                    ksum+=k;
-                    m++;
-                }
-            }
-            if (ksum>0) {r/=ksum; g/=ksum; b/=ksum;}
-
-            if (m!=0) {
-                float rgb[]={ r, g, b };
-                setSampleMaskedImage(newimage, x, y, rgb);
-                setMask(newimage, x, y, 0);
-            } else {
-                float rgb[]={ 0, 0, 0 };
-                setMask(newimage, x, y, 1);
-                setSampleMaskedImage(newimage, x, y, rgb);
-            }
-            ys+=2;
-        }
-        xs+=2;
-    }
-    updateMaskBounds(newimage);
-    return newimage;
-}
-
-// return a downsampled image (factor 1/2)
-MaskedImage_P downsample1(MaskedImage_P source)
-{
-    const float kernel[6] = {1,5,10,10,5,1};
-    int H, W;
-    int x, y;
-    int dx, dy;
-    int xk, yk;
-    float k, ky;
-    float r=0, g=0, b=0, m=0, ksum=0;
-    H=source->image->height;
-    W=source->image->width;
-    int newW=W/2, newH=H/2;
-
-    MaskedImage_P newimage = initNewMaskedImage(newW, newH, source->image->nChannels);
-    for (x=0;x<H-1;x+=2) {
-        for (y=0;y<W-1;y+=2) {
-            r=0; g=0; b=0; m=0; ksum=0;
-
-            for (dy=-2;dy<=3;++dy) {
-                yk=y+dy;
-                if (yk<0 || yk>=W)
-                    continue;
-                ky = kernel[2+dy];
-                for (dx=-2;dx<=3;++dx) {
-                    xk = x+dx;
-                    if (xk<0 || xk>=H)
-                        continue;
-
-                    if (source->mask[xk*W+yk])
-                        continue;
-
-                    k = kernel[2+dx]*ky;
-                    float* rgb = getSampleMaskedImage(source, xk, yk);
-                    r+= k*rgb[0];
-                    g+= k*rgb[1];
-                    b+= k*rgb[2];
-                    ksum+=k;
-                    m++;
-                }
-            }
-            if (ksum>0) {
-                r/=ksum;
-                g/=ksum;
-                b/=ksum;
-            }
-
-            if (m!=0) {
-                float rgb[]={ r, g, b };
-                setSampleMaskedImage(newimage, x/2, y/2, rgb);
-                setMask(newimage, x/2, y/2, 0);
-            } else {
-                setMask(newimage, x/2, y/2, 1);
-            }
-        }
-    }
-    updateMaskBounds(newimage);
-    return newimage;
-}
-
-
-// return a downsampled image (factor 1/2)
 MaskedImage_P downsample(MaskedImage_P source)
 {
     const float kernel[2] = {1.,1.};
@@ -581,7 +498,7 @@ void dumpField( NNF_P nnf, int level, int emloop )
     fclose(f0);
 }
 
-void dumpVote(float*** vote, MaskedImage_P img, int level, int emloop)
+void dumpVote(Votes_P votes, MaskedImage_P img, int level, int emloop)
 {
     char buf[256];
     sprintf(buf,"r_%d_%d.csv", level, emloop);
@@ -593,9 +510,10 @@ void dumpVote(float*** vote, MaskedImage_P img, int level, int emloop)
 
     for( int x=0 ; x<img->image->height ; ++x){
         for( int y=0 ; y<img->image->width ; ++y){
-            fprintf(f0, "%g, ", vote[x][y][0]);
-            fprintf(f1, "%g, ", vote[x][y][1]);
-            fprintf(f2, "%g, ", vote[x][y][3]);
+            Vote_P vote = get_vote(votes, x, y);
+            fprintf(f0, "%g, ", vote->r);
+            fprintf(f1, "%g, ", vote->g);
+            fprintf(f2, "%g, ", vote->w);
         }
         fprintf(f0, "\n");
         fprintf(f1, "\n");
@@ -609,7 +527,7 @@ void dumpVote(float*** vote, MaskedImage_P img, int level, int emloop)
 #else
 void dumpMaskedImage( MaskedImage_P img, int level, int emloop, int tag ){}
 void dumpField( NNF_P nnf, int level, int emloop ){}
-void dumpVote(float*** vote, MaskedImage_P img, int level, int emloop){}
+void dumpVote(Votes_P votes, MaskedImage_P img, int level, int emloop){}
 #endif
 
 
@@ -888,17 +806,18 @@ void addEltInpaintingPyramid(Inpaint_P imp, MaskedImage_P elt)
 }
 
 // Maximization Step : Maximum likelihood of target pixel
-void MaximizationStep(MaskedImage_P target, float*** vote)
+void MaximizationStep(MaskedImage_P target, Votes_P votes)
 {
     int y, x, H, W;
     H = target->image->height;
     W = target->image->width;
     for( x=0 ; x<H ; ++x){
         for( y=0 ; y<W ; ++y){
-            if (vote[x][y][3]>0) {
-                float r = (vote[x][y][0]/vote[x][y][3]);
-                float g = (vote[x][y][1]/vote[x][y][3]);
-                float b = (vote[x][y][2]/vote[x][y][3]);
+            Vote_P vote = get_vote(votes, x, y); //TODO this can be optimized by using iterator
+            if (vote->w > 0) {
+                float r = (vote->r / vote->w);
+                float g = (vote->g / vote->w);
+                float b = (vote->b / vote->w);
                 float rgb[]={r, g, b};
                 setSampleMaskedImage(target, x, y, rgb);
                 setMask(target, x, y, 0);
@@ -909,16 +828,17 @@ void MaximizationStep(MaskedImage_P target, float*** vote)
 }
 
 
-void weightedCopy(MaskedImage_P src, int xs, int ys, float*** vote, int xd,int yd, float w)
+void weightedCopy(MaskedImage_P src, int xs, int ys, Votes_P votes, int xd,int yd, float w)
 {
     if (isMasked(src, xs, ys))
         return;
 
     float *rgb = getSampleMaskedImage(src, xs, ys);
-    vote[xd][yd][0] += w*rgb[0];
-    vote[xd][yd][1] += w*rgb[1];
-    vote[xd][yd][2] += w*rgb[2];
-    vote[xd][yd][3] += w;
+    Vote_P vote = get_vote(votes, xd, yd);
+    vote->r += w*rgb[0];
+    vote->g += w*rgb[1];
+    vote->b += w*rgb[2];
+    vote->w += w;
 }
 
 static inline float similarity( float distance )
@@ -938,7 +858,7 @@ static inline float similarity( float distance )
 }
 
 // Expectation Step : vote for best estimations of each pixel
-void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage_P target, int upscale)
+void ExpectationStep(NNF_P nnf, Votes_P votes, MaskedImage_P source, MaskedImage_P target, int upscale)
 {
     int y, x, /*H, W,*/ dy, dx;
     Field** field = nnf->field;
@@ -962,10 +882,11 @@ void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage
 
             if( !containsMasked(source, x, y, R+4) ){ //why R+4?
                 float *rgb = getSampleMaskedImage(source, x, y);
-                vote[x][y][0] = rgb[0];
-                vote[x][y][1] = rgb[1];
-                vote[x][y][2] = rgb[2];
-                vote[x][y][3] = 1.f;
+                Vote_P vote = get_vote(votes, x, y);
+                vote->r = rgb[0];
+                vote->g = rgb[1];
+                vote->b = rgb[2];
+                vote->w = 1.f;
             }
             else {
                 // vote for each pixel inside the input patch
@@ -1002,7 +923,7 @@ void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage
 
                         if (xs < 0 || xs >= H_source || ys < 0 || ys >= W_source)
                             continue;
-                        weightedCopy(source, xs, ys, vote, x, y, w);
+                        weightedCopy(source, xs, ys, votes, x, y, w);
                     }
                 }
             }
@@ -1015,7 +936,6 @@ void ExpectationStep(NNF_P nnf, float*** vote, MaskedImage_P source, MaskedImage
 MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
 {
     int emloop, H, W;
-    float*** vote;
 
     int iterEM = MIN(2*level, 4);
     int iterNNF = MIN(5, 1+level);
@@ -1073,29 +993,16 @@ MaskedImage_P ExpectationMaximization(Inpaint_P imp, int level)
 
         // --- EXPECTATION STEP ---
         // votes for best patch from NNF Source->Target (completeness) and Target->Source (coherence)
-        vote = (float ***)malloc(newtarget->image->height*sizeof(float **));
-        for (int i=0 ; i<newtarget->image->height ; ++i ){
-            vote[i] = (float **)malloc(newtarget->image->width*sizeof(float *));
-            for  (int j=0 ; j<newtarget->image->width ; ++j) {
-                vote[i][j] = (float *)calloc(4, sizeof(float));
-            }
-        }
+        Votes_P votes =  alloc_votes(newtarget->image->height, newtarget->image->width);
 
-        ExpectationStep(imp->nnf_TargetToSource, vote, newsource, newtarget, upscaled);
+        ExpectationStep(imp->nnf_TargetToSource, votes, newsource, newtarget, upscaled);
 
         // --- MAXIMIZATION STEP ---
         // compile votes and update pixel values
-        dumpVote(vote, newtarget, level, emloop);
-        MaximizationStep(newtarget, vote);
+        dumpVote(votes, newtarget, level, emloop);
+        MaximizationStep(newtarget, votes);
         dumpMaskedImage(newtarget, level, emloop, 4);
-
-        for (int i=0;i<newtarget->image->height;i++) {
-            for (int j=0;j<newtarget->image->width;j++)
-                free(vote[i][j]);
-
-            free(vote[i]);
-        }
-        free(vote);
+        free_votes( votes );
     }
 
     return newtarget;
