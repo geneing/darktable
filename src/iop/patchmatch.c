@@ -292,7 +292,6 @@ int containsMasked(MaskedImage_P mIm, int x, int y, int S)
     return 0;
 }
 
-
 static inline float gammaConversion( float rgb)
 {
       return rgb <= 0.0031308 ? 12.92 * rgb : (1.0 + 0.055) * powf(rgb, 1.0 / 2.4) - 0.055;
@@ -304,6 +303,9 @@ static inline float RGB_distance( const float* c1, const float* c2)
     float dRed = (c1[0]-c2[0]);
     float dGreen = (c1[1]-c2[1]);
     float dBlue = (c1[2]-c2[2]);
+
+    //this is supposed to be distance in colorspace that reflects human perception better
+    // https://en.wikipedia.org/wiki/Color_difference
     float distance = sqrtf( (2.f+mean_red)*dRed*dRed + 4.f*dGreen*dGreen + (3.f-mean_red)*dBlue*dBlue );
     return min1(distance/3.f, 1.f);
 }
