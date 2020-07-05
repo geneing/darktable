@@ -29,7 +29,9 @@
 #include "iop/iop_api.h"
 #include <gtk/gtk.h>
 #include <stdlib.h>
+#include <time.h>
 
+#include "resynthesizer/imageSynth.h"
 
 // this is the version of the modules parameters,
 // and includes version information about compile-time dt
@@ -310,6 +312,7 @@ void modify_roi_in(struct dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *
             // we get the area for the source
             int fl, ft, fw, fh;
 
+            //TODO: Fix logic here. It goes over all masks including inpaint.
             if(!dt_masks_get_source_area(self, piece, form, &fw, &fh, &fl, &ft))
             {
                 forms = g_list_next(forms);
@@ -398,6 +401,37 @@ static int masks_get_delta(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   }
 
   return res;
+}
+
+
+static void
+dumpBuffer(
+  ImageBuffer* buffer,
+  unsigned int pixelelsPerPixel
+  )
+{
+    int row;
+    int col;
+    int pixelel;
+    FILE *f = g_fopen("buffer.csv","w");
+    for (row=0; row<buffer->height; row++)
+    {
+        for (col=0; col<buffer->width; col++)
+        {
+            pixelel = 0;
+            //for (pixelel=0; pixelel<pixelelsPerPixel; pixelel++)
+                fprintf(f, "%d, ", buffer->data[row*buffer->rowBytes + col*pixelelsPerPixel + pixelel]);
+          //printf(" ");
+          // TODO print pad bytes
+        }
+    fprintf(f, "\n");
+    }
+    fclose(f);
+}
+
+void progressCallback(int percent, void * context)
+{
+  printf("Percent %d\n", percent);
 }
 
 
@@ -576,10 +610,39 @@ void _process(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const
           //process_inpaint( );
           // now we do the pixel clone
 
-          inpaint( in, out, roi_in, roi_out, mask, ch );
+          if( 1 ){
+              inpaint( in, out, roi_in, roi_out, mask, ch );
+          }
+          else{
+              int nPix = roi_in->width*roi_in->height;
+              unsigned char* img_data = (unsigned char*) malloc(ch*nPix);
+              unsigned char* mask_data = (unsigned char*) malloc(nPix);
 
+              for(int i=0; i<nPix; i++){
+                  for(int j=0; j<ch; j++){
+                      img_data[ch*i+j] = (unsigned char)(in[ch*i+j]*255.f);
+                  }
+                  mask_data[i] = (unsigned char)(mask[i]*255.f);
+              }
+              ImageBuffer tmp_image = {img_data, roi_in->width, roi_in->height, ch*roi_in->width};
+              ImageBuffer tmp_mask = {mask_data, roi_in->width, roi_in->height, roi_in->width};
 
-//          for(int yy = roi_out->y; yy < roi_out->y+roi_out->height; yy++)
+              TImageSynthParameters parameters;
+              setDefaultParams(&parameters);
+              int cancelFlag = 0;
+              clock_t start, end;
+              double cpu_time_used;
+              start = clock();
+              imageSynth(&tmp_image, &tmp_mask, T_RGBA, &parameters, progressCallback, (void*) 0, &cancelFlag);
+              end = clock();
+              cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+              fprintf(stderr, "[patchmatch] %dx%d : %g sec\n", roi_in->width, roi_in->height, cpu_time_used);
+
+              dumpBuffer(&tmp_image, ch);
+              free(mask_data);
+              free(img_data);
+          }
+          //          for(int yy = roi_out->y; yy < roi_out->y+roi_out->height; yy++)
 //          {
 //              for(int xx = roi_out->x; xx < roi_out->x+roi_out->width; xx++)
 //              {
