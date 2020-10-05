@@ -31,8 +31,9 @@ macro (testcompile_opencl_kernel IN)
 endmacro (testcompile_opencl_kernel)
 
 if (TESTBUILD_OPENCL_PROGRAMS)
-  foreach(IN ${DT_OPENCL_KERNELS})
-    testcompile_opencl_kernel(${IN})
+  foreach(IN1 ${DT_OPENCL_KERNELS})
+      message(WARNING "${IN1}")
+    testcompile_opencl_kernel(${IN1})
   endforeach()
 endif()
 

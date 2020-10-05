@@ -31,7 +31,7 @@
 #include <stdlib.h>
 #include <time.h>
 
-#include "resynthesizer/imageSynth.h"
+//#include "resynthesizer/imageSynth.h"
 
 // this is the version of the modules parameters,
 // and includes version information about compile-time dt
